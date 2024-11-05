@@ -1,30 +1,71 @@
 ---
 project: <%* 
-// Оборачиваем в блок обработки исключений
-try {
-    // Подключаем содержимое заметки Homepage
-    const content = await tp.file.include("[[Homepage]]");
-    // Определяем название секции с проектами
-    const sectionTitle = 'Проекты'; 
-    // Создаём динамическое регулярное выражение для извлечения нужной секции
-    const sectionRegex = new RegExp(`### ${sectionTitle}:\n([\\s\\S]*?)(?=\n###|$)`);
-    // Извлекаем содержимое секции
-    const section = sectionRegex.exec(content)?.[1];
+let selectedProjects = [];
 
-    if (section) {
-        // Ищем все строки с квадратными скобками
-        const matchesIterator = section.matchAll(/- \[\[(.*?)\]\]/g);
-        // Преобразуем итератор в массив названий проектов
-        const projects = Array.from(matchesIterator, m => m[1]);
-        // Предлагаем выбрать проект из списка
-        const selectedProject = await tp.system.suggester(projects, projects);
-        // Выводим выбранный проект в заметку
-        tR += `${selectedProject}`;
-    } else {
-        console.log("Секция не найдена.");
+// Подключаем содержимое заметки Homepage
+const content = await tp.file.include("[[Homepage]]");
+
+// Определяем название секции с проектами
+const sectionTitle = 'Проекты'; 
+
+// Создаём динамическое регулярное выражение для извлечения нужной секции
+const sectionRegex = new RegExp(`###\\s+${sectionTitle}:\\n([\\s\\S]*?)(?=\\n###|$)`);
+
+// Извлекаем содержимое секции
+const section = sectionRegex.exec(content)?.[1];
+
+if (section) {
+    // Ищем все строки с квадратными скобками
+    const matchesIterator = section.matchAll(/- \[\[(.*?)\]\]/g);
+    // Преобразуем итератор в массив названий проектов
+    let projects = Array.from(matchesIterator, m => m[1]);
+
+    // Цикл для выбора нескольких проектов
+    while (projects.length > 0) {
+        // Добавляем опцию "Done" в начало списка
+        const displayOptions = ["<Завершить выбор>", ...projects];
+        const valueOptions = ["Done", ...projects];
+
+        // Запрашиваем выбор у пользователя
+        const choice = await tp.system.suggester(
+            displayOptions, 
+            valueOptions, 
+            false,
+            'Выберите проект(ы) и/или нажмите <Завершить выбор>'
+        );
+
+       // Обработка завершения выбора
+       if (choice === "Done" || !choice) {
+           if (!choice) {
+               // Если была нажата Esc
+               new Notice("Выбор проектов завершён (нажата клавиша Esc).");
+           } else {
+               // Если была выбрана опция Завершить выбор
+               new Notice("Выбор проектов завершён.");
+           }
+           break;
+       } 
+
+        // Удаляем выбранный проект из доступных
+        selectedProjects.push(choice);
+        projects = projects.filter(proj => proj !== choice);
+
+        // Отображаем уведомление о добавлении проекта
+        new Notice(`Проект "${choice}" добавлен. (${selectedProjects.length}/${projects.length + selectedProjects.length})`);
+
+        // Завершаем выбор, если закончились проекты
+        if (projects.length === 0) {
+            new Notice("Все проекты выбраны.");
+            break;
+        }
     }
-} catch (error) {
-    console.error("Templater Error:", error);
+
+    if (selectedProjects.length > 0) {
+        // Формируем список выбранных проектов
+        const projectsList = selectedProjects.map(proj => `- ${proj}`).join('\n');
+        // Добавляем перенос строки перед списком для корректного форматирования
+        tR += `\nproject:\n${projectsList}`;
+    } 
 }
 %>
 instance: <%* 
