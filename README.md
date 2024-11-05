@@ -10,13 +10,13 @@
 # Используемые плагины
 ## Templater
 Шаблон main должен применяться ко всем вновь созданным заметкам. Это можно реализовать в настройках плагина templater. В разделе Folder templates в качестве директории нужно выбрать / (корень), а в качестве шаблона - main.md.
-![image](https://github.com/user-attachments/assets/b819a9b6-6265-47be-be01-b0f9cc6299f6)
+![image](https://github.com/user-attachments/assets/abc9828b-e911-40a1-8e27-7ab5d0f73f59)
 ## Calendar 
 А для удобства создания и управления ежедневными заметками используем плагин Calendar.
-![image](https://github.com/user-attachments/assets/c1a9ccce-ee84-43f1-86bf-58e8309bea90)
+![image](https://github.com/user-attachments/assets/63bcdd4f-2946-42c3-8a6f-d71a87de1165)
 ## Periodic Notes
 Надо задать формат даты и папку для хранения ежедневных заметок.
-![image](https://github.com/user-attachments/assets/0c473a7b-4162-4046-870b-836a795bfcc7)
+![image](https://github.com/user-attachments/assets/25c76431-2adc-4463-b44f-affa2f43645a)
 ## Kanban
 Доску называем Рабочие задачи.
 
@@ -29,10 +29,10 @@
 - Canceled
 - Повторяющиеся
 
-![image](https://github.com/user-attachments/assets/f2bb688a-1fee-4889-8dce-d7d7a6ab86fe)
+![image](https://github.com/user-attachments/assets/eb5c42b8-82f0-4474-89f7-638d981d7b54)
 ## Dataview
 Включаем поддержку JS
-![image](https://github.com/user-attachments/assets/cab6b72b-3b6f-4581-943a-447e05be0e3e)
+![image](https://github.com/user-attachments/assets/aabe23f7-a72d-49fc-a793-366aca079b75)
 
 # Шаблоны
 ## main
@@ -41,18 +41,17 @@
 ## daily
 Шаблон для ежедневных заметок.
 
-![image](https://github.com/user-attachments/assets/c48c5db2-07e9-4c2d-840a-6a924122699e)
+![image](https://github.com/user-attachments/assets/6101aa82-d51d-4819-a498-30558c22adfe)
 
 ## project
 Шаблон для заметок с типом проект.
 
-![image](https://github.com/user-attachments/assets/41dd0035-f6c3-43dc-aafd-1984bdcd8034)
+![image](https://github.com/user-attachments/assets/7e862eaf-fa3e-4e6a-afe1-8bc5b06528f9)
 
 ## task
 Шаблон для заметок с типом задача.
 
-![image](https://github.com/user-attachments/assets/be26d96b-f99e-4eeb-8e57-1e2acf47a407)
-
+![image](https://github.com/user-attachments/assets/6480e693-1062-4ada-8cd8-81c46413d407)
 
 # Ссылки
 - Dataview JavaScript API: https://blacksmithgu.github.io/obsidian-dataview/api/intro/
