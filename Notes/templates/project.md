@@ -122,7 +122,17 @@ try {
   });
 
   // Фильтруем страницы по проекту
-  const pages = dv.pages().filter(p => p.project && p.project.toLowerCase() === filterProject && p.file.path !== currentPath);
+  const pages = dv.pages().filter(p => {
+      // Провееряем есть ли у заметки project
+      if (!p.project) return false;
+      // Преобразуем p.project в массив, если он пришел как строка
+      const projects = Array.isArray(p.project) ? p.project : [p.project];
+      // Приводим имена проектов к нижнему регистру для обеспечения регистронезависимого сравнения
+      const lowercaseProjects = projects.map(proj => proj.toLowerCase());
+      // Возвращаем полученное значение и исключаем текущую заметку из результатов
+      return lowercaseProjects.includes(filterProject) && p.file.path !== currentPath;
+    });
+  
   let data = [];
 
   for (let page of pages) {
