@@ -1,81 +1,148 @@
 ---
-project: <%* 
-let selectedProjects = [];
+project:<%*
+const homepage = "Homepage";
 
-// Подключаем содержимое заметки Homepage
-const content = await tp.file.include("[[Homepage]]");
+// Общие функции
+async function selectItemsFromSection(fileName, sectionTitle, promptMessage, doneOption = "<Завершить выбор>", doneValue = "Done") {
 
-// Определяем название секции с проектами
-const sectionTitle = 'Проекты'; 
+	// Подключаем содержимое заметки
+    const content = await tp.file.include(`[[${fileName}]]`);
+    
+    // Создаём регулярное выражение для поиска секции
+    const sectionRegex = new RegExp(`###\\s+${sectionTitle}:?\\n([\\s\\S]*?)(?=\\n###|$)`);
+    
+    // Применяем регулярное выражение к содержимому заметки
+    const match = sectionRegex.exec(content);
+    if (!match) {
+        new Notice(`Секция "${sectionTitle}" не найдена в заметке "${fileName}".`);
+        return [];
+    }
+    const sectionContent = match[1].trim();
 
-// Создаём динамическое регулярное выражение для извлечения нужной секции
-const sectionRegex = new RegExp(`###\\s+${sectionTitle}:\\n([\\s\\S]*?)(?=\\n###|$)`);
-
-// Извлекаем содержимое секции
-const section = sectionRegex.exec(content)?.[1];
-
-if (section) {
     // Ищем все строки с квадратными скобками
-    const matchesIterator = section.matchAll(/- \[\[(.*?)\]\]/g);
-    // Преобразуем итератор в массив названий проектов
-    let projects = Array.from(matchesIterator, m => m[1]);
+    const matchesIterator = sectionContent.matchAll(/- \[\[(.*?)\]\]/g);
 
-    // Цикл для выбора нескольких проектов
-    while (projects.length > 0) {
-        // Добавляем опцию "Done" в начало списка
-        const displayOptions = ["<Завершить выбор>", ...projects];
-        const valueOptions = ["Done", ...projects];
+    // Преобразуем итератор в массив названий элементов
+    let items = Array.from(matchesIterator, m => m[1]);
+    if (items.length === 0) {
+        new Notice(`Секция "${sectionTitle}" пустая в заметке "${fileName}".`);
+        return [];
+    }
 
+    let selectedItems = [];
+
+    // Цикл для выбора нескольких элементов
+    while (items.length > 0) {
+        // Добавляем опцию "Завершить выбор" в начало списка
+        const displayOptions = [doneOption, ...items];
+        const valueOptions = [doneValue, ...items];
+        
         // Запрашиваем выбор у пользователя
-        const choice = await tp.system.suggester(
-            displayOptions, 
-            valueOptions, 
-            false,
-            'Выберите проект(ы) и/или нажмите <Завершить выбор>'
-        );
+        const choice = await tp.system.suggester(displayOptions, valueOptions, false, promptMessage);
 
-       // Обработка завершения выбора
-       if (choice === "Done" || !choice) {
-           if (!choice) {
-               // Если была нажата Esc
-               new Notice("Выбор проектов завершён (нажата клавиша Esc).");
-           } else {
-               // Если была выбрана опция Завершить выбор
-               new Notice("Выбор проектов завершён.");
-           }
-           break;
-       } 
+        // Обработка завершения выбора
+        if (choice === doneValue || !choice) {
+            if (!choice) {
+                // Если была нажата Esc
+                new Notice(`Выбор "${sectionTitle}" завершён (нажата клавиша Esc).`);
+            } else {
+                // Если была выбрана опция "Завершить выбор"
+                new Notice(`Выбор "${sectionTitle}" завершён.`);
+            }
+            break;
+        }
 
-        // Удаляем выбранный проект из доступных
-        selectedProjects.push(choice);
-        projects = projects.filter(proj => proj !== choice);
+        // Добавляем выбранный элемент в список и удаляем из доступных
+        selectedItems.push(choice);
+        items = items.filter(item => item !== choice);
+        
+        // Отображаем уведомление о добавлении элемента
+        new Notice(`Элемент "${choice}" добавлен. (${selectedItems.length}/${selectedItems.length + items.length})`);
 
-        // Отображаем уведомление о добавлении проекта
-        new Notice(`Проект "${choice}" добавлен. (${selectedProjects.length}/${projects.length + selectedProjects.length})`);
-
-        // Завершаем выбор, если закончились проекты
-        if (projects.length === 0) {
-            new Notice("Все проекты выбраны.");
+        // Завершаем выбор, если закончились элементы
+        if (items.length === 0) {
+            new Notice(`Все элементы "${sectionTitle}" выбраны.`);
             break;
         }
     }
+    return selectedItems;
+}
 
-    if (selectedProjects.length > 0) {
-        // Формируем список выбранных проектов
-        const projectsList = selectedProjects.map(proj => `- ${proj}`).join('\n');
-        // Добавляем перенос строки перед списком для корректного форматирования
-        tR += `\nproject:\n${projectsList}`;
-    } 
+// Начало для project
+const projSectionName = "Проекты";
+const projMessage = 'Выберите проект(ы) и/или нажмите <Завершить выбор>';
+
+// Используем функцию для выбора проектов
+let selectedProjects = await selectItemsFromSection(homepage, projSectionName, projMessage);
+
+if (selectedProjects.length > 0) {
+    // Формируем список выбранных проектов
+    const projectsList = selectedProjects.map(proj => `- ${proj}`).join('\n');
+    // Добавляем перенос строки перед списком для корректного форматирования
+    tR += `\n${projectsList}`;
 }
 %>
-instance: <%* 
-try {
-    const instanceValue = await tp.system.prompt("Введите значение для instance:");
-    if (instanceValue !== null) {
-        tR += instanceValue + " ";
+instance:<%*
+const instanceValue = await tp.system.prompt("Введите значение для instance:");
+if (instanceValue !== null) {
+    tR += ` ${instanceValue}`;
+}
+%>
+kanban:<%*
+const kanbSectionName = "Kanban";
+const kanbMessage = 'Выберите Kanban-доску(и) и/или нажмите <Завершить выбор>';
+
+// Используем функцию для выбора Kanban-досок
+let selectedBoards = await selectItemsFromSection(homepage, kanbSectionName, kanbMessage);
+
+if (selectedBoards.length > 0) {
+    // Формируем список выбранных досок
+    const boardName = selectedBoards.map(kanb => `- ${kanb}`).join('\n');
+    // Добавляем перенос строки перед списком для корректного форматирования
+    tR += `\n${boardName}`;
+
+    for (const boardName of selectedBoards) {
+        // Формируем путь к заметке с доской и получаем на него ссылку
+        const kanbanFilePath = `kanban/${boardName}.md`;
+        const kanbanFile = app.vault.getAbstractFileByPath(kanbanFilePath);
+
+        if (!kanbanFile) {
+            new Notice(`Kanban-доска "${kanbanFilePath}" не найдена.`);
+            continue;
+        }
+
+        // Читаем содержимое выбранной доски
+        const kanbanContent = await app.vault.cachedRead(kanbanFile);
+       
+        // Определяем название секции
+        const tasksSectionTitle = 'В работе';
+
+        // Создаём динамическое регулярное выражение для извлечения нужной секции
+        const taskSectionRegex = new RegExp(`##\\s+${tasksSectionTitle}\\n([\\s\\S]*?)(?=\\n##|$)`, 'm');
+
+        // Извлекаем содержимое секции
+        const taskSectionMatch = taskSectionRegex.exec(kanbanContent);
+        const taskSectionContent = taskSectionMatch?.[1] || '';
+
+        // Ищем все ссылки на доски в квадратных скобках
+        const taskMatches = taskSectionContent.matchAll(/- \[ \] \[\[(.*?)\]\]/g);
+        const tasks = Array.from(taskMatches, m => m[1]);
+
+        // Получаем имя текущей заметки
+        const currentNoteName = app.workspace.getActiveFile()?.basename;
+
+        // Проверяем, есть ли создаваемая задача на доске
+        if (tasks.includes(currentNoteName)) {
+            new Notice(`Задача "${currentNoteName}" уже присутствует в колонке "${tasksSectionTitle}" на доске "${boardName}". Добавление отменено.`);
+        } else {
+            // Добавляем новую задачу на доску
+            const newTaskSectionContent = `${taskSectionContent.trim()}\n- [ ] [[${currentNoteName}]]\n`;
+            // Обновляем содержимое всей доски, заменяя старую секцию задач на новую с добавленной задачей
+            const updatedKanbanContent = kanbanContent.replace(taskSectionRegex, `## ${tasksSectionTitle}\n${newTaskSectionContent}`);
+            await app.vault.modify(kanbanFile, updatedKanbanContent);
+            new Notice(`Задача "${currentNoteName}" добавлена в колонку "${tasksSectionTitle}" на доске "${boardName}".`);
+        }
     }
-} catch (error) {
-    console.error("Templater Error:", error);
 }
 %>
 date: <% tp.date.now("YYYY-MM-DD") %>
@@ -83,56 +150,51 @@ cssclasses:
   - wide-page
 ---
 <%*
-// Оборачиваем в блок обработки исключений
-try {
-    // Формируем полный путь к сегодняшней ежедневной заметке
-    const dailyNoteCatalog = 'periodic/daily';
-    const currentDate = tp.date.now("DD-MM-YYYY");
-    const dailyNotePath = `${dailyNoteCatalog}/${currentDate}`;
-    const dailyNotePathMd = `${dailyNotePath}.md`;
-    
-    let dailyNoteFile;
+// Формируем полный путь к сегодняшней ежедневной заметке
+const dailyNoteCatalog = 'periodic/daily';
+const currentDate = tp.date.now("DD-MM-YYYY");
+const dailyNotePath = `${dailyNoteCatalog}/${currentDate}`;
+const dailyNotePathMd = `${dailyNotePath}.md`;
 
-    // Проверяем, существует ли ежедневная заметка
-    const dailyNoteExists = await tp.file.exists(dailyNotePathMd);
+let dailyNoteFile;
 
-    if (dailyNoteExists) {
-        // Если существует, получаем ее полный адрес
-        dailyNoteFile = app.vault.getAbstractFileByPath(dailyNotePathMd);
-    } else {
-        // Если не существует, создаем ее с применением шаблона daily
-        dailyNoteFile = await tp.file.create_new(tp.file.find_tfile("daily"), dailyNotePath);
-    }
+// Проверяем, существует ли ежедневная заметка
+const dailyNoteExists = await tp.file.exists(dailyNotePathMd);
 
-    // Получаем имя текущей заметки
-    const currentNoteName = app.workspace.getActiveFile()?.basename;
-    
-    // Читаем содержимое ежедневной заметки
-    const dailyNoteContent = await app.vault.read(dailyNoteFile);
+if (dailyNoteExists) {
+    // Если существует, получаем ее полный адрес
+    dailyNoteFile = app.vault.getAbstractFileByPath(dailyNotePathMd);
+} else {
+    // Если не существует, создаем ее с применением шаблона daily
+    dailyNoteFile = await tp.file.create_new(tp.file.find_tfile("daily"), dailyNotePath);
+}
 
-    // Подготавливаем заголовок для добавления в ежедневную заметку
-    const headingToAdd = `### [[${currentNoteName}]]`;
+// Получаем имя текущей заметки
+const currentNoteName = app.workspace.getActiveFile()?.basename;
 
-    // Проверяем, есть ли уже заголовок с именем текущей заметки
-    if (!dailyNoteContent.includes(headingToAdd)) {
-        // Если нет, то добавляем заголовок в конец файла
-        await app.vault.append(dailyNoteFile, `\n${headingToAdd}\n`);
-    }
+// Читаем содержимое ежедневной заметки
+const dailyNoteContent = await app.vault.read(dailyNoteFile);
 
-    // Проверяем, открыта ли ежедневная заметка
-    let leaf = app.workspace.getLeavesOfType('markdown').find(
-        (leaf) => leaf.view.file && leaf.view.file.path === dailyNoteFile.path
-    );
+// Подготавливаем заголовок для добавления в ежедневную заметку
+const headingToAdd = `### [[${currentNoteName}]]`;
 
-    if (leaf) {
-        // Если заметка уже открыта, переходим в нее
-        app.workspace.setActiveLeaf(leaf);
-    } else {
-        // Если заметка не открыта, открываем ее в новой вкладке
-        await app.workspace.getLeaf('tab').openFile(dailyNoteFile);
-    }
-} catch (error) {
-    console.error("Templater Error:", error);
+// Проверяем, есть ли уже заголовок с именем текущей заметки
+if (!dailyNoteContent.includes(headingToAdd)) {
+    // Если нет, то добавляем заголовок в конец файла
+    await app.vault.append(dailyNoteFile, `\n${headingToAdd}\n`);
+}
+
+// Проверяем, открыта ли ежедневная заметка
+let leaf = app.workspace.getLeavesOfType('markdown').find(
+    (leaf) => leaf.view.file && leaf.view.file.path === dailyNoteFile.path
+);
+
+if (leaf) {
+    // Если заметка уже открыта, переходим в нее
+    app.workspace.setActiveLeaf(leaf);
+} else {
+    // Если заметка не открыта, открываем ее в новой вкладке
+    await app.workspace.getLeaf('tab').openFile(dailyNoteFile);
 }
 %>
 ```dataviewjs
