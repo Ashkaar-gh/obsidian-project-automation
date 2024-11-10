@@ -103,8 +103,8 @@ if (kanbanFiles.length === 0) {
     return;
 }
 
-// Создаем объкт для хранения соответствий между задачами и их статусами
-const taskStatusMap = {};
+// Создаем объект для хранения соответствий между задачами и их статусами
+const taskBoardStatusMap = {};
 
 // Проходим по каждой доске
 for (const kanbanFile of kanbanFiles) {
@@ -113,85 +113,107 @@ for (const kanbanFile of kanbanFiles) {
     // Создаем переменную для хранения текущего статуса
     let currentStatus = null;
 
-    // Проходим по каждой строке доски, ищем заголовки второго уровня
-    kanbanContent.split('\n').forEach(line => {const headingMatch = line.match(/^##\s+(.*)/);
-        // Если строка является заголовком, обновляем текущий статус
+    // Проходим по каждой строке доски
+    kanbanContent.split('\n').forEach(line => {
+        const headingMatch = line.match(/^##\s+(.*)/);
+        // Если строка является заголовком второго уровня, обновляем текущий статус
         if (headingMatch) {
             currentStatus = headingMatch[1].trim();
-        // Если статус уже установлен, то ищем ссылки на задачи в строке
+        // Если статус уже установлен, ищем ссылки на задачи в строке
         } else if (currentStatus) {
             const linkMatch = line.match(/\[\[([^\]]+)\]\]/);
             // Если нашли ссылку на задачу, извлекаем название задачи и ее статус
-            if (linkMatch) taskStatusMap[linkMatch[1].trim()] = currentStatus;
+            if (linkMatch) {
+                const taskName = linkMatch[1].trim();
+
+                // Если задача еще не добавлена в объект, создаем для нее пустой массив
+                if (!taskBoardStatusMap[taskName]) {
+                    taskBoardStatusMap[taskName] = [];
+                }
+                // Добавляем в массив информацию о доске и статусе задачи
+                taskBoardStatusMap[taskName].push({
+                    kanbanBoard: kanbanFile.basename,
+                    status: currentStatus
+                });
+            }
         }
     });
 }
 
-// Фильтруем страницы по проекту
+// Получаем заметки, относящиеся к текущему проекту
 const pages = dv.pages().filter(p => {
-    // Провееряем есть ли у заметки project
+    // Если свойство project отсутствует, исключаем эту страницу
     if (!p.project) return false;
-    // Преобразуем p.project в массив, если он пришел как строка
+    // Приводим project к массиву, если это не массив
     const projects = Array.isArray(p.project) ? p.project : [p.project];
-    // Приводим имена проектов к нижнему регистру для обеспечения регистронезависимого сравнения
+    // Приводим все имена проектов к нижнему регистру
     const lowercaseProjects = projects.map(proj => proj.toLowerCase());
-    // Возвращаем полученное значение и исключаем текущую заметку из результатов
+    // Проверяем, соответствует ли проект фильтру и исключаем текущую страницу
     return lowercaseProjects.includes(filterProject) && p.file.path !== currentPath;
-  });
+});
 
+// Создаем пустой массив для хранения данных для таблицы
 let data = [];
 
+// Проходим по каждой странице в списке
 for (let page of pages) {
-    // Получаем даты событий из ежедневных заметок
+    // Получаем даты событий из ежедневных заметок для текущей задачи
     let eventDates = await getEventDatesFromDailyNotes(page.file.name);
-    // Если даты нет, используем дату страницы
+    // Если даты не найдены и у страницы есть свойство date, добавляем его
     if (!eventDates.length && page.date) eventDates.push(parseDate(page.date));
     
-    // Определяем начальную дату
+    // Определяем начальную и конечную даты выполнения задачи
     let startDate = eventDates.length ? new Date(Math.min(...eventDates)) : null;
-    // Определяем конечную дату
     let endDate = eventDates.length ? new Date(Math.max(...eventDates)) : null;
     
+    // Получаем имя задачи
     const taskName = page.file.name;
-    // Получаем текущий статус задачи
-    const status = taskStatusMap[taskName] || "Не указано";
-    // Получаем иконку статуса
-    const statusIcon = getStatusIcon(status);
+    // Получаем список статусов и досок для текущей задачи
+    const taskBoardStatusList = taskBoardStatusMap[taskName] || [];
+
+    // Получаем список досок, к которым относится задача
+    const kanbanBoards = taskBoardStatusList.map(entry => entry.kanbanBoard);
+    // Избавляемся от повторений в списке досок
+    const uniqueKanbanBoards = [...new Set(kanbanBoards)];
+
+    // Получаем список статусов задачи
+    const statusList = taskBoardStatusList.map(entry => entry.status);
+    // Избавляемся от повторений в списке статусов
+    const uniqueStatuses = [...new Set(statusList)];
+    // Добавляем иконки к статусам и соединяем их в строку
+    const statusIcons = uniqueStatuses.map(s => `${s} ${getStatusIcon(s)}`).join(', ') || "Не указано";
     
-    // Определяем формат времени выполнения
+    // Определяем время выполнения задачи в виде строки
     let executionTime;
     if (startDate && endDate && startDate.getTime() !== endDate.getTime()) {
-        // Если диапазон дат
         executionTime = `${formatDate(startDate)} — ${formatDate(endDate)}`;
     } else if (startDate) {
-        // Если одна дата
         executionTime = formatDate(startDate);
     } else {
-        // Если даты нет
         executionTime = "Нет даты";
     }
-    
-    // Заполняем массив данными для таблицы
+    // Добавляем объект с данными о задаче в массив data
     data.push({
         note: page.file.link,
         instance: page.instance || "Не указано",
-        status: `${status} ${statusIcon}`,
+        kanbanBoards: uniqueKanbanBoards.join(', ') || "Не указано",
+        status: statusIcons,
         executionTime,
         startDate
     });
 }
 
-// Сортируем данные по дате начала задачи
+// Сортируем данные по начальной дате выполнения
 data.sort((a, b) => (a.startDate || Infinity) - (b.startDate || Infinity));
 
+// Если есть данные, отображаем таблицу с нужной информацией
 if (data.length) {
-    // Отображаем таблицу с данными
     dv.table(
-        ["Заметка", "Инстанс", "Статус", "Время выполнения"],
-        data.map(d => [d.note, d.instance, d.status, d.executionTime])
+        ["Заметка", "Инстанс", "Kanban", "Статус", "Время выполнения"],
+        data.map(d => [d.note, d.instance, d.kanbanBoards, d.status, d.executionTime])
     );
+// Иначе выводим сообщение о том, что данных нет
 } else {
-    // Выводим сообщение, если данных нет
     dv.paragraph("Нет данных для отображения.");
 }
 ```
