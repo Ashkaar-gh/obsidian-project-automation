@@ -40,6 +40,7 @@ tR += currentNoteName;
 %>
 cssclasses:
   - wide-page
+  - table-divider
 ---
 
 ```dataviewjs
