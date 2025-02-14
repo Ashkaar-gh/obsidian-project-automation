@@ -1,0 +1,40 @@
+{
+	"nodes":[
+		{"id":"0c0a660477f85a7d","type":"text","text":"Фиксируем в календаре","x":-317,"y":560,"width":250,"height":60,"color":"6"},
+		{"id":"56cfa3070ab35845","type":"text","text":"Имеет определенную дату?","x":-317,"y":400,"width":250,"height":60},
+		{"id":"677f6435591f6893","type":"text","text":"Trash","x":21,"y":80,"width":250,"height":60,"color":"3"},
+		{"id":"682cddee54e01870","type":"text","text":"Inbox","x":-317,"y":-80,"width":250,"height":60,"color":"3"},
+		{"id":"5131b79e83b35808","type":"text","text":"Нужно что-то делать с задачей?","x":-317,"y":80,"width":250,"height":60},
+		{"id":"b1b83771e021ad85","type":"text","text":"Требует более 2 минут на выполнение?","x":21,"y":400,"width":250,"height":60},
+		{"id":"77b3a1a6d60a5501","type":"text","text":"Задача односложная и понятная?","x":-317,"y":237,"width":250,"height":60},
+		{"id":"ab1d590d825554f7","type":"text","text":"To do","x":700,"y":560,"width":250,"height":60,"color":"3"},
+		{"id":"54361c0b7bc25862","type":"text","text":"Waiting","x":700,"y":720,"width":250,"height":60,"color":"3"},
+		{"id":"de9e48d326d8af0c","type":"text","text":"Задача завершена?","x":700,"y":237,"width":250,"height":60},
+		{"id":"b7ff3ed61d4e14af","type":"text","text":"In progress","x":700,"y":400,"width":250,"height":60,"color":"3"},
+		{"id":"e16cbcd1085b4f49","type":"text","text":"Могу сделать только я?","x":360,"y":720,"width":250,"height":60},
+		{"id":"3e942074f45f9b01","type":"text","text":"Создаем задачу и/или определяем подзадачу","x":360,"y":237,"width":250,"height":60,"color":"2"},
+		{"id":"9aebd45ef2f34aee","type":"text","text":"Done","x":700,"y":80,"width":250,"height":60,"color":"4"},
+		{"id":"f0dbd3217d1e7660","type":"text","text":"Надо сделать сейчас?","x":360,"y":560,"width":250,"height":60}
+	],
+	"edges":[
+		{"id":"8bffb1ec6925136c","fromNode":"5131b79e83b35808","fromSide":"right","toNode":"677f6435591f6893","toSide":"left","label":"нет"},
+		{"id":"9bfa2be217cca952","fromNode":"e16cbcd1085b4f49","fromSide":"right","toNode":"54361c0b7bc25862","toSide":"left","label":"нет"},
+		{"id":"42f248c414d627b3","fromNode":"56cfa3070ab35845","fromSide":"bottom","toNode":"0c0a660477f85a7d","toSide":"top","label":"да"},
+		{"id":"734903faea580dd9","fromNode":"f0dbd3217d1e7660","fromSide":"right","toNode":"ab1d590d825554f7","toSide":"left","label":"нет"},
+		{"id":"605efe026bad8987","fromNode":"682cddee54e01870","fromSide":"bottom","toNode":"5131b79e83b35808","toSide":"top"},
+		{"id":"def234401e944a01","fromNode":"de9e48d326d8af0c","fromSide":"top","toNode":"9aebd45ef2f34aee","toSide":"bottom","label":"да"},
+		{"id":"bd229e22cc87a9b0","fromNode":"56cfa3070ab35845","fromSide":"right","toNode":"b1b83771e021ad85","toSide":"left","label":"нет"},
+		{"id":"b2f7faf78f90dc08","fromNode":"b1b83771e021ad85","fromSide":"right","toNode":"b7ff3ed61d4e14af","toSide":"left","label":"нет"},
+		{"id":"92c06c55695a6fe8","fromNode":"5131b79e83b35808","fromSide":"bottom","toNode":"77b3a1a6d60a5501","toSide":"top","label":"да"},
+		{"id":"973ff1bd8437e0a2","fromNode":"e16cbcd1085b4f49","fromSide":"top","toNode":"f0dbd3217d1e7660","toSide":"bottom","label":"да"},
+		{"id":"bee391c51e305e4e","fromNode":"77b3a1a6d60a5501","fromSide":"bottom","toNode":"56cfa3070ab35845","toSide":"top","label":"да"},
+		{"id":"879b9ca8ab69262c","fromNode":"b1b83771e021ad85","fromSide":"bottom","toNode":"e16cbcd1085b4f49","toSide":"left","label":"да"},
+		{"id":"d71ea2de44f3b7cd","fromNode":"3e942074f45f9b01","fromSide":"top","toNode":"5131b79e83b35808","toSide":"top"},
+		{"id":"d10c177c2d042511","fromNode":"77b3a1a6d60a5501","fromSide":"right","toNode":"3e942074f45f9b01","toSide":"left","label":"нет"},
+		{"id":"80acd292aeb1ea73","fromNode":"de9e48d326d8af0c","fromSide":"left","toNode":"3e942074f45f9b01","toSide":"right","label":"нет"},
+		{"id":"5d5e0e484b06b381","fromNode":"f0dbd3217d1e7660","fromSide":"top","toNode":"b7ff3ed61d4e14af","toSide":"bottom","label":"да"},
+		{"id":"796ac61f8ae253fa","fromNode":"b7ff3ed61d4e14af","fromSide":"top","toNode":"de9e48d326d8af0c","toSide":"bottom"},
+		{"id":"38312376c491c10d","fromNode":"ab1d590d825554f7","fromSide":"right","toNode":"b7ff3ed61d4e14af","toSide":"right"},
+		{"id":"e9c7252daa02d013","fromNode":"54361c0b7bc25862","fromSide":"right","toNode":"de9e48d326d8af0c","toSide":"right"}
+	]
+}

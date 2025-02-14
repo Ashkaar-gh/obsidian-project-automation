@@ -59,10 +59,12 @@ if (projects.includes(currentNoteName)) {
 
 ## Done
 
+**Complete**
 
 
 ## Canceled
 
+**Complete**
 
 
 ## Повторяющиеся

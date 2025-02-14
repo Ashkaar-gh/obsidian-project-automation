@@ -1,0 +1,58 @@
+.line-divider {
+    border-bottom: 1px solid #444;
+    display: flex;
+    align-items: center;
+    margin-left: 5px;
+}
+
+.button-container {
+    visibility: hidden;
+    display: flex;
+    flex-wrap: nowrap;
+    margin-right: 5px;
+    margin-bottom: 10px;
+    margin-top: 10px;
+}
+
+.button-container button {
+    margin-left: 5px;
+}
+
+.action-menu, .status-menu, .calendar-menu {
+    position: absolute;
+    background-color: #282c34;
+    border: 1px solid #444;
+    padding: 5px;
+}
+
+.menu-item {
+    padding: 5px 10px;
+    cursor: pointer;
+    color: #fff;
+}
+
+.dropdown-button {
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+.dropdown-button:hover, .add-button:hover {
+    background-color: #0056b3;
+}
+
+.menu-item:hover {
+    background-color: #3a8bff;
+}
+
+.input-field {
+    margin-top: 10px;
+    margin-right: 5px;
+    margin-bottom: 10px;
+    margin-left: 5px;
+    width: 30%;
+}
+
+.add-button {
+    border-radius: 5px;
+    cursor: pointer;
+}

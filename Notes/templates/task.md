@@ -149,6 +149,12 @@ date: <% tp.date.now("YYYY-MM-DD") %>
 cssclasses:
   - wide-page
 ---
+## Описании задачи
+
+## Критерий выполнения
+
+## Cписок подзадач
+- [ ] 
 <%*
 // Формируем полный путь к сегодняшней ежедневной заметке
 const dailyNoteCatalog = 'periodic/daily';
