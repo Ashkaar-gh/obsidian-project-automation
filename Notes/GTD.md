@@ -160,51 +160,53 @@ async function updateContentAndNotify(file, newContent, currentContent, message)
 
 // Функция для создания формы добавления новых записей в список
 function createAddItemForm(parentElement) {
-    // Создаем контейнер формы
+    // Создаем контейнер для формы
     const formContainer = document.createElement('div');
-    // Поле ввода для новых записей
+    // Создаем поле ввода для новых записей
     const inputField = document.createElement('input');
     // Устанавливаем тип ввода как текст
     inputField.type = 'text';
-    // Подсказка-ввод
+    // Подсказка для ввода текста
     inputField.placeholder = 'Новая запись';
+    // Добавляем CSS-класс к полю ввода
     inputField.classList.add('input-field');
 
-    // Создаем кнопку "Добавить"
+    // Создаем кнопку Добавить
     const addButton = createButton('Добавить');
+    // Добавляем CSS-класс к кнопке
     addButton.classList.add('add-button');
-    // Обработчик клика по кнопке
+    // Устанавливаем обработчик клика для кнопки
     addButton.addEventListener('click', async () => {
-        // Получаем и обрезаем значение
+        // Получаем и обрезаем значение из поля ввода
         const newItem = inputField.value.trim();
-        // Проверяем, что введено не пустое значение
+        // Проверяем, что введено непустое значение
         if (newItem) {
-            // Добавляем новый элемент в Inbox
-            await addNewItemToInbox(newItem);
             // Очищаем поле ввода
             inputField.value = '';
+            // Добавляем новую запись в Inbox
+            await addNewItemToInbox(newItem);
         }
     });
 
-    // Обработчик нажатия клавиатуры в поле ввода
+    // Устанавливаем обработчик нажатия клавиши в поле ввода
     inputField.addEventListener('keydown', async (event) => {
-        // Если нажата клавиша Enter
+        // Проверяем, была ли нажата клавиша Enter
         if (event.key === 'Enter') {
-            // Получаем и обрезаем значение
+            // Получаем и обрезаем значение из поля ввода
             const newItem = inputField.value.trim();
-            // Проверяем на непустое значение
+            // Проверяем, что введено непустое значение
             if (newItem) {
-                // Добавляем элемент в Inbox
-                await addNewItemToInbox(newItem);
-                // Очищаем после добавления
+                // Очищаем поле ввода
                 inputField.value = '';
+                // Добавляем новую запись в Inbox
+                await addNewItemToInbox(newItem);
             }
         }
     });
 
     // Добавляем поле ввода в контейнер формы
     formContainer.appendChild(inputField);
-    // Добавляем кнопку в контейнер
+    // Добавляем кнопку "Добавить" в контейнер формы
     formContainer.appendChild(addButton);
     // Размещаем форму в начале родительского элемента
     parentElement.prepend(formContainer);
@@ -214,27 +216,80 @@ function createAddItemForm(parentElement) {
 async function addNewItemToInbox(newItem) {
     // Определяем путь к файлу Inbox
     const inboxFilePath = 'Inbox.md';
-    // Пытаемся получить файл
+    // Получаем абстрактный файл по заданному пути
     const inboxFile = app.vault.getAbstractFileByPath(inboxFilePath);
 
-    // Если файла нет
+    // Если файла Inbox не найдено
     if (!inboxFile) {
         // Показываем уведомление об ошибке
         new Notice(`Файл "${inboxFilePath}" не найден.`);
-        return; // Прекращаем выполнение функции
+        // Прекращаем выполнение функции
+        return;
     }
 
-    // Читаем содержимое файла
+    // Читаем текущее содержимое файла Inbox
     const content = await app.vault.cachedRead(inboxFile);
-    // Добавляем новую запись
+
+    // Формируем обновленное содержимое с новой записью
     const updatedContent = `${content}\n${newItem}`.trim();
-    // Обновляем файл с новым содержимым
+    // Обновляем файл Inbox новым содержимым
     await app.vault.modify(inboxFile, updatedContent);
 
-    // Уведомление об успешном добавлении
+    // Показываем уведомление о добавлении новой записи
     new Notice(`Добавлено: "${newItem}"`);
-    // Обновляем UI после изменений
-    loadAndDisplayInboxContent();
+    // Добавляем новую строку в пользовательский интерфейс
+    addNewLineToUI(newItem, inboxFile, templateContent);
+}
+
+// Функция для добавления новой строки в UI
+function addNewLineToUI(line, inboxFile, templateContent) {
+    // Получаем контейнер для отображения записей
+    const container = document.querySelector('div[data-view="dv"]');
+
+    // Проверяем, что контейнер существует
+    if (container) {
+        // Создаем контейнер для новой строки
+        const lineContainer = document.createElement('div');
+        // Добавляем CSS-класс для оформления контейнера строки
+        lineContainer.className = 'line-divider';
+
+        // Создаем элемент для отображения текста строки
+        const textElement = document.createElement('span');
+        // Устанавливаем текстовое содержание элемента
+        textElement.textContent = line;
+
+        // Устанавливаем обработчик клика для редактирования строки
+        textElement.addEventListener('click', async () => {
+            // Создаем элемент для ввода текста
+            const inputField = document.createElement('input');
+            // Устанавливаем тип ввода как текст
+            inputField.type = 'text';
+            // Устанавливаем текущее значение в поле ввода
+            inputField.value = line;
+
+            // Проверяем, что контейнер строки содержит текстовый элемент
+            if (lineContainer.contains(textElement)) {
+                // Заменяем текстовый элемент на поле ввода
+                lineContainer.replaceChild(inputField, textElement);
+                // Устанавливаем фокус на поле ввода
+                inputField.focus();
+                // Устанавливаем контейнер строки как активный элемент
+                activeInput = lineContainer;
+                // Включаем редактирование для строки
+                enableEditing(lineContainer, inputField, textElement, line, allLines, inboxFile, templateContent);
+            }
+        });
+
+        // Создаем контейнер для кнопок, привязанных к строке
+        const buttonContainer = createButtons(lineContainer, line, allLines, inboxFile, container, templateContent, textElement);
+
+        // Добавляем текстовый элемент в контейнер строки
+        lineContainer.appendChild(textElement);
+        // Добавляем контейнер с кнопками в контейнер строки
+        lineContainer.appendChild(buttonContainer);
+        // Добавляем контейнер строки в общий контейнер
+        container.appendChild(lineContainer);
+    }
 }
 
 // Функция редактирования строк
@@ -414,7 +469,7 @@ function createButtons(lineContainer, originalText, allLines, inboxFile, contain
                     allLines.splice(globalIndex, 1);
                     // Объединяем оставшиеся строки в обновленное содержимое
                     const updatedContent = allLines.join('\n');
-                    // Обновляем содержимое файла Inbox без вывода уведомления
+                    // Обновляем содержимое файла Inbox
                     await updateContentAndNotify(inboxFile, updatedContent, content, '');
                 }
             }
@@ -529,7 +584,7 @@ async function loadAndDisplayInboxContent() {
     if (visibleLines.length === 0) {
         // Если нет, мы добавляем сообщение "Inbox пустой"
         const emptyMessage = document.createElement('div');
-        emptyMessage.textContent = 'Inbox пустой';
+        emptyMessage.textContent = 'Пусто';
         emptyMessage.style.fontStyle = 'italic';
         container.appendChild(emptyMessage);
     } else {

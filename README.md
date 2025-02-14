@@ -40,6 +40,7 @@
 
 ## Tasks
 Задача без статуса сначала получает статус To do, при следующем нажатии - In progress, при следующем - Done.
+
 ![image](https://github.com/user-attachments/assets/fd59195e-b44d-4e8e-8369-e80aec89ec3d)
 
 # Шаблоны
