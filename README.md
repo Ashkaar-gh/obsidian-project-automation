@@ -38,6 +38,10 @@
 Включаем поддержку JS
 ![image](https://github.com/user-attachments/assets/aabe23f7-a72d-49fc-a793-366aca079b75)
 
+## Tasks
+Задача без статуса сначала получает статус To do, при следующем нажатии - In progress, при следующем - Done.
+![image](https://github.com/user-attachments/assets/fd59195e-b44d-4e8e-8369-e80aec89ec3d)
+
 # Шаблоны
 ## main
 Это центральный шаблон, в котором выбирается тип создаваемой заметки.
