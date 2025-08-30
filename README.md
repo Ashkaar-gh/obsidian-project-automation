@@ -69,6 +69,16 @@
 
 ![image](https://github.com/user-attachments/assets/b517d996-2079-49f1-85b8-6e00562403c4)
 
+# Обновление
+Существующие заметки с типами проект и задача можно обновить скриптом, который находится в заметке Updater.md.
+Назначение скрипта:
+1. Найти все проекты и задачи
+2. Проверить их frontmatter и код на соответствие актуальным шаблонам
+3. Автоматически исправить типовые ошибки (регистр, cssclasses, устаревший dataviewjs)
+4. Сформировать отчет о проблемах, требующих ручного вмешательства (добавление полей kanban, date)
+
+Перед запуском скприпта обязательно сделайте полный бекап всего каталога с заметками.
+
 # Ссылки
 - Dataview JavaScript API: https://blacksmithgu.github.io/obsidian-dataview/api/intro/
 - Документацию Templater: https://silentvoid13.github.io/Templater/introduction.html
