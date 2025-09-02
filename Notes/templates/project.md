@@ -1,43 +1,5 @@
 ---
-project: <%*
-// Получаем путь до заметки Homepage
-const homepageFile = await app.vault.getAbstractFileByPath('Homepage.md');
-
-// Читаем содержимое заметки Homepage
-const content = await app.vault.cachedRead(homepageFile);
-
-// Определяем название секции с проектами
-const sectionTitle = 'Проекты'; 
-
-// Создаём динамическое регулярное выражение для извлечения нужной секции
-const sectionRegex = new RegExp(`### ${sectionTitle}:\n([\\s\\S]*?)(?=\\n###|$)`);
-
-// Извлекаем содержимое секции
-const sectionMatch = sectionRegex.exec(content);
-const sectionContent = sectionMatch?.[1] || '';
-
-// Ищем все ссылки на проекты в квадратных скобках
-const matchesIterator = sectionContent.matchAll(/- \[\[(.*?)\]\]/g);
-
-// Преобразуем итератор в массив названий проектов
-const projects = Array.from(matchesIterator, m => m[1]);
-
-// Получаем имя текущей заметки
-const currentNoteName = app.workspace.getActiveFile()?.basename;
-
-// Проверяем, есть ли создаваемый проект в общем списке проектов
-if (projects.includes(currentNoteName)) {
-    new Notice(`Проект "${currentNoteName}" уже существует. Добавление отменено.`);
-} else {
-    // Добавляем новый проект в список проектов
-    const newSectionContent = sectionContent.trim() + `\n- [[${currentNoteName}]]\n`;
-    // Обновляем содержимое списка проектов, добавляя новый проект
-    const updatedContent = content.replace(sectionRegex, `### ${sectionTitle}:\n${newSectionContent}`);
-    await app.vault.modify(homepageFile, updatedContent);
-    new Notice(`Проект "${currentNoteName}" добавлен в секцию "${sectionTitle}".`);
-}
-tR += currentNoteName;
-%>
+project: %%projectName%%
 cssclasses:
   - wide-page
   - table-divider
@@ -48,17 +10,29 @@ cssclasses:
 const filterProject = app.workspace.getActiveFile()?.basename.toLowerCase();
 const currentPath = dv.current().file.path;
 
-// Функция для преобразования строки в дату
+/**
+ * Преобразует строку с датой в формате 'DD-MM-YYYY' в объект Date.
+ * @param {string} dateStr - Строка с датой.
+ * @returns {Date} - Объект Date.
+ */
 function parseDate(dateStr) {
     return moment(dateStr, 'DD-MM-YYYY').toDate();
 }
 
-// Функция для преобразования даты в строку
+/**
+ * Форматирует объект Date в строку формата 'DD-MM-YYYY'.
+ * @param {Date} date - Объект Date для форматирования.
+ * @returns {string} - Строка с отформатированной датой.
+ */
 function formatDate(date) {
     return moment(date).format('DD-MM-YYYY');
 }
 
-// Функция для получения иконки по статусу задачи
+/**
+ * Возвращает иконку в зависимости от статуса задачи.
+ * @param {string} status - Статус задачи в нижнем регистре.
+ * @returns {string} - Emoji-иконка, соответствующая статусу.
+ */
 function getStatusIcon(status) {
     const icons = {
         'backlog': '🗒️',
@@ -66,12 +40,18 @@ function getStatusIcon(status) {
         'canceled': '🚫',
         'в работе': '⚙️',
         'тестирование': '🔍',
+        'повторяющиеся': '🔁',
         'done': '☑️'
     };
     return icons[status.toLowerCase()] || '❓';
 }
 
-// Функция для получения даты из имени ежедневной заметки
+/**
+ * Находит даты упоминания задачи в заголовках ежедневных заметок.
+ * @async
+ * @param {string} taskName - Имя задачи для поиска.
+ * @returns {Promise<Date[]>} - Промис, который разрешается массивом объектов Date.
+ */
 async function getEventDatesFromDailyNotes(taskName) {
     const dailyNotes = dv.pages('"periodic/daily"').values;
     const eventDates = [];
