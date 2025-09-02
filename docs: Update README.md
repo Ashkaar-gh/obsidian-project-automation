@@ -14,7 +14,9 @@
 # Используемые плагины
 ## Templater
 Шаблон main должен применяться ко всем вновь созданным заметкам. Это можно реализовать в настройках плагина templater. В разделе Folder templates в качестве директории нужно выбрать / (корень), а в качестве шаблона - main.md.
-![image](https://github.com/user-attachments/assets/abc9828b-e911-40a1-8e27-7ab5d0f73f59)
+Для ежедневных заметок используем шаблон daily.md.
+
+<img width="587" height="512" alt="Screenshot 2025-09-02 221854" src="https://github.com/user-attachments/assets/bb8bc332-8ac6-45da-a91d-5901ca03d04c" />
 ## Calendar 
 А для удобства создания и управления ежедневными заметками используем плагин Calendar.
 ![image](https://github.com/user-attachments/assets/63bcdd4f-2946-42c3-8a6f-d71a87de1165)
