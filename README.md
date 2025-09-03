@@ -17,6 +17,9 @@
 Для ежедневных заметок используем шаблон daily.md.
 
 <img width="587" height="512" alt="Screenshot 2025-09-02 221854" src="https://github.com/user-attachments/assets/bb8bc332-8ac6-45da-a91d-5901ca03d04c" />
+
+Добавляем каталог utils, в котором лежат js функции используемые в шаблонах
+<img width="1142" height="226" alt="image" src="https://github.com/user-attachments/assets/2b8764e8-9846-41a2-98ef-258dbb5caf89" />
 ## Calendar 
 А для удобства создания и управления ежедневными заметками используем плагин Calendar.
 ![image](https://github.com/user-attachments/assets/63bcdd4f-2946-42c3-8a6f-d71a87de1165)
