@@ -18,8 +18,8 @@
 
 <img width="587" height="512" alt="Screenshot 2025-09-02 221854" src="https://github.com/user-attachments/assets/bb8bc332-8ac6-45da-a91d-5901ca03d04c" />
 
-Добавляем каталог utils, в котором лежат js функции используемые в шаблонах
-<img width="1142" height="226" alt="image" src="https://github.com/user-attachments/assets/2b8764e8-9846-41a2-98ef-258dbb5caf89" />
+Добавляем каталог templater-scripts, в котором лежат js функции используемые в шаблонах
+<img width="700" height="140" alt="image" src="https://github.com/user-attachments/assets/bb9ba497-2da6-4a17-80a7-9fa6762a8a36" />
 ## Calendar 
 А для удобства создания и управления ежедневными заметками используем плагин Calendar.
 ![image](https://github.com/user-attachments/assets/63bcdd4f-2946-42c3-8a6f-d71a87de1165)
@@ -42,6 +42,9 @@
 ## Dataview
 Включаем поддержку JS
 ![image](https://github.com/user-attachments/assets/aabe23f7-a72d-49fc-a793-366aca079b75)
+Отключаем авторефреши
+
+<img width="563" height="64" alt="Screenshot 2025-09-16 205913" src="https://github.com/user-attachments/assets/727dc5d4-a830-47ae-acc1-0fd61735864b" />
 
 ## Tasks
 Задача без статуса сначала получает статус To do, при следующем нажатии - In progress, при следующем - Done.
