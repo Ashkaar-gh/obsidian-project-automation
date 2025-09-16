@@ -1,0 +1,23 @@
+.task-view-display {
+    cursor: default;
+}
+
+.task-view-edit {
+    display: none;
+    width: 100%;
+    resize: none;
+    overflow-y: hidden;
+    font-size: inherit;
+}
+
+.task-view-summary {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.5em 0;
+}
+
+.task-view-collapse-button {
+    padding: 0 5px;
+    cursor: pointer;
+    font-size: inherit;
+}

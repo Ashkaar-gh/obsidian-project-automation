@@ -1,3 +1,11 @@
 .table-divider table tr {
     border-bottom: 1px solid #444;
 }
+
+.table-divider table :is(th, td):is(:nth-child(3), :nth-child(4), :nth-child(5)) {
+    white-space: nowrap;
+}
+
+.table-divider table :is(th, td):nth-child(2) {
+    max-width: 155px;
+}
