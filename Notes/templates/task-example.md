@@ -4,17 +4,24 @@ context: %%context%%
 environment: %%environment%%
 status: В работе
 date: %%date%%
+group: %%group%%
 cssclasses:
   - wide-page
 ---
-## Описании задачи
+## Описание задачи
 
 ## Критерий выполнения
 
-## Cписок подзадач
+## Список подзадач
 - [ ] 
+Задача: %%task%%
+Реквест: %%request%%
+Тред: %%thread%%
+
+Работа с элементом **%%item_name%%** в категории %%category%%.
+
+Конфиг: %%config_file%%
 
 ```dataviewjs
-// Вызываем внешний скрипт и передаем ему объект 'obsidian' в качестве входных данных.
 await dv.view("dataview-scripts/task-view", { obsidian: obsidian });
 ```

@@ -1,101 +1,128 @@
 /**
- * Создает кликабельный заголовок (<summary>) для сворачиваемого блока (<details>).
- * @async
- * @param {object} dv - Объект API Dataview, переданный из основного скрипта.
- * @param {object} obsidian - Глобальный объект Obsidian API, переданный из dv.view.
- * @param {HTMLElement} detailsElement - Родительский HTML-элемент <details>, в который будет добавлен заголовок.
- * @param {string} titleContent - Содержимое заголовка в виде строки (может быть HTML или Markdown).
- * @param {boolean} [isMarkdown=false] - Флаг, указывающий, нужно ли рендерить titleContent как Markdown.
- * @returns {Promise<void>} - Промис, который разрешается после завершения отрисовки.
+ * Рендер task-view: оглавление (renderToc), контент секций (renderContent), сворачиваемые details, кнопка копирования в code block.
  */
-async function createCollapsibleHeader(dv, obsidian, detailsElement, titleContent, isMarkdown = false) {
-    // <summary> — это видимая часть блока <details>, по которой можно кликнуть.
-    const summary = detailsElement.createEl('summary', { cls: 'task-view-summary' });
-    const titleContainer = summary.createDiv();
+/** summary + заголовок (markdown или html) + кнопка свёртки. */
+async function createCollapsibleHeader(dv, obsidian, detailsElement, titleContent, isMarkdown = false, ui) {
+    const summary = ui.create('summary', { cls: 'task-view-summary', parent: detailsElement });
+    const titleContainer = ui.create('div', { parent: summary });
 
-    // Если заголовок содержит Markdown (например, ссылку [[...]]), его нужно отрендерить через API Obsidian.
     if (isMarkdown) {
         await obsidian.MarkdownRenderer.render(app, titleContent, titleContainer, dv.current().file.path, new obsidian.Component());
-        // Удаляем стандартный отступ у параграфа, который создается рендерером, для чистоты вида.
-        const renderedP = titleContainer.querySelector('p');
-        if (renderedP) renderedP.style.margin = '0';
     } else {
-        // Если это простой HTML, просто вставляем его.
         titleContainer.innerHTML = titleContent;
     }
 
-    // Создаем кнопку для сворачивания/разворачивания.
-    const button = summary.createEl('button', { cls: 'task-view-collapse-button' });
-    // Устанавливаем иконку в зависимости от того, открыт или закрыт блок.
-    button.textContent = detailsElement.hasAttribute('open') ? '▼' : '◀';
+    ui.create('button', {
+        cls: 'task-view-collapse-button',
+        text: detailsElement.hasAttribute('open') ? '▼' : '◀',
+        parent: summary
+    });
 }
 
-/**
- * Отрисовывает блок "Оглавление" в виде сворачиваемого callout-блока.
- * @async
- * @param {object} dv - Объект API Dataview.
- * @param {object} obsidian - Глобальный объект Obsidian API.
- * @param {HTMLElement} container - Родительский HTML-элемент, в котором будет создано оглавление.
- * @param {Array<object>} tocEntries - "Плоский" массив объектов подзаголовков, полученный от сборщика данных.
- * @returns {Promise<void>} - Промис, который разрешается после завершения отрисовки.
- */
-async function renderToc(dv, obsidian, container, tocEntries) {
-    // Если подзаголовков нет, то и оглавление не нужно.
-    if (tocEntries.length === 0) return;
-    // Создаем сворачиваемый блок <details>, стилизованный как callout.
-    const details = container.createEl('details', { cls: 'callout', attr: { 'data-callout': 'toc', open: '' } });
-    // Получаем HTML-код иконки "карандаш" из Obsidian.
+/** Добавить кнопку копирования в pre, если её ещё нет. */
+function injectCopyButton(obsidian, preElement, ui) {
+    if (preElement.querySelector('.task-view-copy-btn')) return;
+    const copyIcon = obsidian.getIcon('copy');
+    ui.create('button', {
+        cls: 'task-view-copy-btn',
+        attr: { 'aria-label': 'Copy code' },
+        html: copyIcon ? copyIcon.outerHTML : '&#128203;',
+        parent: preElement
+    });
+}
+
+/** Оглавление: callout с списком ссылок data-scroll-to-id. */
+async function renderToc(dv, obsidian, container, tocEntries, ui) {
+    if (!tocEntries || tocEntries.length === 0) return;
+
+    const details = ui.create('details', {
+        cls: 'callout',
+        attr: { 'data-callout': 'toc', open: '' },
+        parent: container
+    });
+
     const iconEl = obsidian.getIcon('pencil').outerHTML;
-    // Используем нашу вспомогательную функцию для создания заголовка "Оглавление".
-    await createCollapsibleHeader(dv, obsidian, details, `<div class="callout-title"><div class="callout-icon">${iconEl}</div><div class="callout-title-inner">Оглавление</div></div>`);
-    const content = details.createDiv({ cls: 'callout-content' });
-    const tocList = content.createEl('ul', { cls: 'task-toc-list' });
-    // Проходим по каждому подзаголовку и создаем для него элемент списка.
+
+    await createCollapsibleHeader(
+        dv, 
+        obsidian, 
+        details, 
+        `<div class="callout-title"><div class="callout-icon">${iconEl}</div><div class="callout-title-inner">Оглавление</div></div>`,
+        false,
+        ui
+    );
+
+    const content = ui.create('div', { cls: 'callout-content', parent: details });
+    const tocList = ui.create('ul', { cls: 'task-toc-list', parent: content });
+
     tocEntries.forEach(entry => {
-        const li = tocList.createEl('li');
-        // Создаем отступ слева, чтобы имитировать вложенность заголовков.
-        li.style.marginLeft = `${(entry.level - 1) * 1.5}em`;
-        // Создаем ссылку с текстом заголовка и датой.
-        const link = li.createEl('a', { text: `${entry.text} (${entry.dateText})` });
-        // Добавляем data-атрибут с ID блока, к которому нужно прокрутить страницу. Этот атрибут будет использован обработчиком событий.
-        link.dataset.scrollToId = entry.id;
+        const li = ui.create('li', {
+            style: { marginLeft: `${(entry.level - 1) * 1.5}em` },
+            parent: tocList
+        });
+
+        const linkAttrs = {};
+        if (entry.id) linkAttrs['data-scroll-to-id'] = entry.id;
+
+        ui.create('a', {
+            text: entry.isDateOnly ? entry.text : `${entry.text} (${entry.dateText})`,
+            attr: linkAttrs,
+            parent: li
+        });
     });
 }
 
 /**
- * Отрисовывает основной контент: список сворачиваемых блоков для каждой записи из ежедневных заметок.
- * @async
- * @param {object} dv - Объект API Dataview.
- * @param {object} obsidian - Глобальный объект Obsidian API.
- * @param {HTMLElement} container - Родительский HTML-элемент, в котором будет создан контент.
- * @param {Array<object>} structuredData - Основной массив объектов с данными, полученный от сборщика.
- * @returns {Promise<void>} - Промис, который разрешается после завершения отрисовки.
+ * Основная функция рендера контента.
+ * 
+ * @param {Object} dv - API Dataview.
+ * @param {Object} obsidian - API Obsidian.
+ * @param {HTMLElement} container - Контейнер.
+ * @param {Array} structuredData - Данные.
+ * @param {Object} ui - Модуль UI.
  */
-async function renderContent(dv, obsidian, container, structuredData) {
-    // Проходим по каждой записи (блоку контента) из собранных данных.
+async function renderContent(dv, obsidian, container, structuredData, ui) {
+    const component = new obsidian.Component();
+
     for (const [index, entry] of structuredData.entries()) {
-        // Каждая запись — это отдельный сворачиваемый блок <details>.
-        const detailsContainer = container.createEl('details', { cls: 'task-view-entry', attr: { open: '' } });
-        // Присваиваем блоку ID, на который ссылаются ссылки из оглавления.
-        detailsContainer.id = entry.id;
-        // Сохраняем индекс элемента в data-атрибуте. Это нужно обработчику событий, чтобы знать, какой элемент данных обновлять при сохранении.
-        detailsContainer.dataset.entryIndex = index;
-        // Создаем заголовок блока с помощью нашей вспомогательной функции, передавая Markdown-ссылку на дату.
-        await createCollapsibleHeader(dv, obsidian, detailsContainer, `**${entry.dateLink}**`, true);
-        // Создаем div для отображения отрендеренного контента.
-        const displayDiv = detailsContainer.createEl('div', { cls: 'task-view-display' });
-        // Создаем скрытое по умолчанию поле <textarea> для редактирования.
-        detailsContainer.createEl('textarea', { cls: 'task-view-edit', text: entry.content });
-        // Отрисовываем Markdown-содержимое в div для отображения.
-        await obsidian.MarkdownRenderer.render(app, entry.content || " ", displayDiv, entry.sourcePath, new obsidian.Component());
-        // Находим все заголовки (h1, h2 и т.д.) внутри только что отрендеренного HTML.
-        const renderedHeadings = displayDiv.querySelectorAll('h1, h2, h3, h4, h5, h6');
-        // Присваиваем этим заголовкам ID, которые мы сгенерировали в сборщике данных. Это позволяет оглавлению ссылаться не только на блок целиком, но и на конкретный подзаголовок внутри него.
-        renderedHeadings.forEach((hEl, idx) => {
-            if (entry.subHeadings[idx]) hEl.id = entry.subHeadings[idx].id;
+        const detailsContainer = ui.create('details', {
+            cls: 'task-view-entry',
+            attr: { 
+                open: '', 
+                'data-entry-index': index 
+            },
+            parent: container
         });
+        detailsContainer.id = entry.id;
+
+        await createCollapsibleHeader(dv, obsidian, detailsContainer, `**${entry.dateLink}**`, true, ui);
+
+        const previewWrap = ui.create('div', { cls: 'markdown-preview-view', parent: detailsContainer });
+        const renderedDiv = ui.create('div', { cls: 'markdown-rendered', parent: previewWrap });
+        const displayDiv = ui.create('div', { cls: 'task-view-display', parent: renderedDiv });
+
+        ui.create('textarea', {
+            cls: 'task-view-edit', 
+            text: entry.content, 
+            parent: detailsContainer
+        });
+
+        await obsidian.MarkdownRenderer.render(app, entry.content || "", displayDiv, entry.sourcePath, component);
+        displayDiv.querySelectorAll('pre').forEach(pre => injectCopyButton(obsidian, pre, ui));
+
+        if (entry.subHeadings && entry.subHeadings.length > 0) {
+            const allHeadings = Array.from(displayDiv.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+            const renderedHeadings = allHeadings.filter(h => !h.closest('.internal-embed'));
+
+            renderedHeadings.forEach(hEl => {
+                const hText = hEl.textContent.trim();
+                const matchingSubHeading = entry.subHeadings.find(subH => subH.text === hText);
+                if (matchingSubHeading) {
+                    hEl.setAttribute('id', matchingSubHeading.id);
+                }
+            });
+        }
     }
 }
 
-// "Экспортируем" основные функции отрисовки, чтобы их можно было вызвать в главном скрипте task-view.js.
 return { renderToc, renderContent };

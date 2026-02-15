@@ -1,6 +1,4 @@
-.task-view-display {
-    cursor: default;
-}
+/* Task view: редактирование секций, оглавление, группы, кнопка копирования, embed-блоки, скролл-якоря, подсветка. */
 
 .task-view-edit {
     display: none;
@@ -10,14 +8,158 @@
     font-size: inherit;
 }
 
+.task-view-entry {
+    margin-top: 20px;
+}
+
 .task-view-summary {
     display: flex;
     justify-content: space-between;
-    padding: 0.5em 0;
+    padding: 8px 0 0;
+    margin: 0;
+}
+
+.task-view-summary p {
+    margin: 0 !important;
+}
+
+.task-view-summary {
+    cursor: default !important;
+}
+
+.task-view-summary a {
+    cursor: pointer !important;
 }
 
 .task-view-collapse-button {
-    padding: 0 5px;
+    cursor: pointer !important;
+}
+
+.task-view-display {
+    max-width: 100%;
+    overflow-x: hidden;
+}
+
+.task-view-entry .markdown-preview-view {
+    margin: 0;
+    padding: 0;
+}
+
+.task-view-display pre,
+.task-view-display .markdown-preview-section pre {
+    margin-top: 0;
+    margin-bottom: 1em;
+    position: relative;
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+    padding: 1em 1.2em;
+    overflow-x: auto;
+}
+
+.task-view-display pre code,
+.task-view-display .markdown-preview-section pre code {
+    background: none;
+    padding: 0;
+}
+
+.task-view-display *:has(+ pre),
+.task-view-display .markdown-preview-section *:has(+ pre) {
+    margin-bottom: 0;
+}
+
+.task-view-display .copy-code-button {
+    display: none !important;
+}
+
+.task-view-copy-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    z-index: 5;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 3px;
+    background: var(--background-primary);
+    color: var(--text-muted);
     cursor: pointer;
-    font-size: inherit;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.15s;
+    box-shadow: 0 0 0 1px var(--background-modifier-border);
+}
+
+.task-view-display pre:hover .task-view-copy-btn,
+.task-view-copy-btn.copied {
+    opacity: 1;
+}
+
+.task-view-copy-btn:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.task-view-copy-btn.copied {
+    color: var(--text-success);
+}
+
+.task-view-copy-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+.task-toc-list {
+    margin-top: 0 !important;
+}
+
+.markdown-source-view.mod-cm6 .cm-embed-block:has(.block-language-dataviewjs) {
+    box-shadow: none !important;
+    border: none !important;
+    background-color: transparent !important;
+    cursor: default !important;
+}
+
+.markdown-source-view.mod-cm6 .cm-embed-block:has(.block-language-dataviewjs) .edit-block-button {
+    display: none !important;
+}
+
+.block-language-dataviewjs textarea,
+.block-language-dataviewjs input {
+    cursor: text !important;
+}
+
+.block-language-dataviewjs a,
+.block-language-dataviewjs button,
+.block-language-dataviewjs .task-view-copy-btn {
+    cursor: pointer !important;
+}
+
+.task-view-entry,
+.task-view-display h1,
+.task-view-display h2,
+.task-view-display h3,
+.task-view-display h4,
+.task-view-display h5,
+.task-view-display h6 {
+    scroll-margin-top: 60px !important;
+}
+
+.target-highlight {
+    animation: highlight-fade 2s ease-out;
+}
+
+@keyframes highlight-fade {
+    0% { background-color: var(--background-modifier-active-hover); }
+    100% { background-color: transparent; }
+}
+
+.task-view-display img,
+.task-view-display video,
+.task-view-display .internal-embed {
+    max-width: 100% !important;
+    height: auto !important;
+    display: block;
 }

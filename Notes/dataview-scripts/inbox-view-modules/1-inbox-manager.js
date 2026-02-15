@@ -1,34 +1,45 @@
 /**
- * Асинхронно загружает все необходимые данные для работы Inbox.
- * Читает содержимое файлов Inbox.md и шаблона задачи.
- * @returns {Promise<object|null>} Объект с данными или null в случае ошибки.
+ * Inbox: loadInboxData(paths), addNewItemToInbox, editItem, deleteItem, createTask, updateItemDateTime.
+ * Кэш шаблона задачи по mtime.
  */
-async function loadInboxData() {
-    // Получаем файлы Inbox и шаблона задачи одновременно для эффективности.
-    const [inboxFile, templateFile] = await Promise.all([
-        app.vault.getAbstractFileByPath('Inbox.md'),
-        app.vault.getAbstractFileByPath('templates/task.md')
-    ]);
+let _templateCache = null;
+let _templateMtime = 0;
 
-    // Проверяем наличие обоих файлов, так как без них работа невозможна.
+async function readPath(pathOrFile, dv) {
+    const path = typeof pathOrFile === 'string' ? pathOrFile : pathOrFile?.path;
+    if (!path) return null;
+    if (dv?.io?.load) {
+        const c = await dv.io.load(path);
+        return c ?? null;
+    }
+    const f = app.vault.getAbstractFileByPath(path);
+    return f ? await app.vault.cachedRead(f) : null;
+}
+
+async function loadInboxData(paths, dv) {
+    const inboxFile = app.vault.getAbstractFileByPath(paths.INBOX_FILE);
+    const templateFile = app.vault.getAbstractFileByPath(paths.TASK_TEMPLATE_PATH);
+
     if (!inboxFile || !templateFile) {
-        const missingFile = !inboxFile ? 'Inbox.md' : 'templates/task.md';
+        const missingFile = !inboxFile ? paths.INBOX_FILE : paths.TASK_TEMPLATE_PATH;
         new Notice(`Критическая ошибка: файл "${missingFile}" не найден.`);
         return null;
     }
 
-    // Читаем содержимое шаблона задачи и Inbox одновременно.
-    const [templateContent, inboxContent] = await Promise.all([
-        app.vault.cachedRead(templateFile),
-        app.vault.cachedRead(inboxFile)
-    ]);
+    if (!_templateCache || templateFile.stat.mtime !== _templateMtime) {
+        _templateCache = await readPath(paths.TASK_TEMPLATE_PATH, dv) ?? await app.vault.cachedRead(templateFile);
+        _templateMtime = templateFile.stat.mtime;
+    }
+    const templateContent = _templateCache;
 
-    // Разбиваем содержимое на строки и обрезаем пробелы.
+    const inboxContent = await readPath(paths.INBOX_FILE, dv);
+    if (inboxContent == null) {
+        new Notice(`Критическая ошибка: не удалось прочитать "${paths.INBOX_FILE}".`);
+        return null;
+    }
     const allLines = inboxContent.split('\n').map(line => line.trim());
-    // Фильтруем строки для отображения (игнорируем уже помеченные как задачи).
     const visibleLines = allLines.filter(line => line.length > 0 && !line.startsWith('- ['));
 
-    // Возвращаем структурированный объект со всеми необходимыми данными.
     return {
         inboxFile,
         templateFile,
@@ -40,64 +51,76 @@ async function loadInboxData() {
 }
 
 /**
- * Функция для обновления содержимого файла и уведомления пользователя, если содержимое изменилось.
- * @param {TFile} file - Файл, который нужно обновить.
- * @param {string} newContent - Новое содержимое файла.
- * @param {string} currentContent - Текущее содержимое файла для сравнения.
- * @param {string} message - Сообщение для уведомления пользователя.
+ * Обновляет содержимое файла и выводит уведомление при наличии изменений.
+ * @param {TFile} file - Целевой файл.
+ * @param {string} newContent - Новое содержимое.
+ * @param {string} currentContent - Текущее содержимое.
+ * @param {string} message - Сообщение для уведомления.
  */
 async function updateContentAndNotify(file, newContent, currentContent, message) {
-    // Проверяем, изменилось ли содержимое, чтобы избежать лишних операций записи.
     if (newContent !== currentContent) {
-        // Модифицируем файл новым содержимым.
         await app.vault.modify(file, newContent);
-        // Показываем уведомление, если сообщение задано.
         if (message) new Notice(message);
     }
 }
 
 /**
- * Функция для добавления новой записи в файл Inbox.
+ * Добавляет новую запись в конец файла Inbox.
  * @param {string} newItem - Текст новой записи.
  */
-async function addNewItemToInbox(newItem) {
-    const inboxFilePath = 'Inbox.md';
-    const inboxFile = app.vault.getAbstractFileByPath(inboxFilePath);
+async function addNewItemToInbox(newItem, paths, dv) {
+    const inboxFile = app.vault.getAbstractFileByPath(paths.INBOX_FILE);
 
     if (!inboxFile) {
-        new Notice(`Ошибка: Файл "${inboxFilePath}" не найден.`);
+        new Notice(`Ошибка: Файл "${paths.INBOX_FILE}" не найден.`);
         return;
     }
 
-    // Читаем текущее содержимое Inbox.
-    const content = await app.vault.cachedRead(inboxFile);
-    // Добавляем новую запись к содержимому, обеспечивая чистоту формата.
+    const content = (await readPath(paths.INBOX_FILE, dv)) ?? '';
     const updatedContent = `${content}\n${newItem}`.trim();
 
-    // Обновляем файл и показываем уведомление.
     await updateContentAndNotify(inboxFile, updatedContent, content, `Добавлено: "${newItem}"`);
 }
 
 /**
- * Функция для удаления строки из Inbox и добавления её в Trash.
- * @param {string} originalText - Исходный текст строки.
- * @param {Array} allLines - Массив всех строк из Inbox.
- * @param {TFile} inboxFile - Файл Inbox, который нужно обновить.
+ * Редактирует существующую запись в Inbox.
+ * @param {string} originalText - Старый текст записи.
+ * @param {string} newText - Новый текст записи.
+ * @param {string[]} allLines - Массив всех строк файла.
+ * @param {TFile} inboxFile - Файл Inbox.
+ * @returns {Promise<boolean>} Результат операции.
  */
-async function deleteItem(originalText, allLines, inboxFile) {
-    const trashFilePath = 'Trash.md';
-    const trashFile = app.vault.getAbstractFileByPath(trashFilePath);
+async function editItem(originalText, newText, allLines, inboxFile, dv) {
+    if (!newText || !newText.trim()) return false;
+    const index = allLines.indexOf(originalText);
+    if (index !== -1) {
+        allLines[index] = newText.trim();
+        const updatedContent = allLines.join('\n');
+        const currentContent = (await readPath(inboxFile, dv)) ?? '';
+        await updateContentAndNotify(inboxFile, updatedContent, currentContent, "Запись обновлена");
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Удаляет запись из Inbox и перемещает её в корзину.
+ * @param {string} originalText - Текст удаляемой записи.
+ * @param {string[]} allLines - Массив всех строк файла.
+ * @param {TFile} inboxFile - Файл Inbox.
+ * @returns {Promise<boolean>} Результат операции.
+ */
+async function deleteItem(originalText, allLines, inboxFile, paths, dv) {
+    const trashFile = app.vault.getAbstractFileByPath(paths.TRASH_FILE);
 
     if (!trashFile) {
-        new Notice('Ошибка: файл Trash.md не найден.');
-        return false; // Возвращаем false в случае неудачи.
+        new Notice(`Ошибка: файл ${paths.TRASH_FILE} не найден.`);
+        return false;
     }
 
-    // Читаем текущее содержимое Trash.
-    const trashContent = await app.vault.cachedRead(trashFile);
-    // Добавляем удалённую строку в Trash.
+    const trashContent = (await readPath(paths.TRASH_FILE, dv)) ?? '';
     const updatedTrashContent = `${trashContent}\n${originalText}`.trim();
-    // Обновляем файл Trash и показываем уведомление.
+    
     await updateContentAndNotify(
         trashFile,
         updatedTrashContent,
@@ -105,56 +128,49 @@ async function deleteItem(originalText, allLines, inboxFile) {
         `Удалено: "${originalText}"`
     );
 
-    // Удаление строки из Inbox.
     const index = allLines.indexOf(originalText);
     if (index !== -1) {
         allLines.splice(index, 1);
         const updatedContent = allLines.join('\n');
-        const inboxContent = await app.vault.cachedRead(inboxFile);
-        // Обновляем файл Inbox без сообщения.
+        const inboxContent = (await readPath(inboxFile, dv)) ?? '';
         await updateContentAndNotify(inboxFile, updatedContent, inboxContent, '');
-        return true; // Возвращаем true в случае успеха.
+        return true;
     }
     return false;
 }
 
 /**
- * Функция для создания новой задачи через шаблон main.md и удаления строки из Inbox.
- * @param {string} originalText - Исходный текст строки.
- * @param {Array} allLines - Массив всех строк из Inbox.
+ * Создает новую задачу на основе записи из Inbox.
+ * @param {string} originalText - Текст записи.
+ * @param {string[]} allLines - Массив строк.
  * @param {TFile} inboxFile - Файл Inbox.
+ * @returns {Promise<boolean>} Результат операции.
  */
-async function createTask(originalText, allLines, inboxFile) {
-    // Очищаем имя файла от недопустимых символов.
+async function createTask(originalText, allLines, inboxFile, dv) {
     const sanitizedFileName = originalText.replace(/[\\\/:*?"<>|]/g, '').trim();
     if (!sanitizedFileName) {
         new Notice("Ошибка: имя задачи не может быть пустым.");
         return false;
     }
 
-    // Определяем путь к файлу будущей задачи.
     const newFilePath = `${sanitizedFileName}.md`;
-    // Проверяем, существует ли уже файл по этому пути.
     if (app.vault.getAbstractFileByPath(newFilePath)) {
         new Notice(`Ошибка: Заметка с именем "${sanitizedFileName}" уже существует.`);
         return false;
     }
 
-    // Устанавливаем глобальный контекст с желаемым именем для скрипта main.md.
     window.INBOX_CONTEXT = {
         noteType: 'task',
         noteName: sanitizedFileName
     };
 
-    // Создаем временный файл и запускаем скрипт main.md.
     const tempFile = await app.vault.create(`temp-task-${Date.now()}.md`, '');
     await app.workspace.getLeaf().openFile(tempFile);
     new Notice(`Запускается создание задачи: "${sanitizedFileName}"`);
 
-    // Удаляем исходную строку из Inbox.
     const index = allLines.indexOf(originalText);
     if (index !== -1) {
-        const currentInboxContent = await app.vault.cachedRead(inboxFile);
+        const currentInboxContent = (await readPath(inboxFile, dv)) ?? '';
         allLines.splice(index, 1);
         const updatedContent = allLines.join('\n');
         await updateContentAndNotify(inboxFile, updatedContent, currentInboxContent, '');
@@ -164,62 +180,44 @@ async function createTask(originalText, allLines, inboxFile) {
 }
 
 /**
- * Обновляет статус для указанной строки в массиве строк.
- * @param {string} originalText - Исходный текст строки.
- * @param {Array} allLines - Массив всех строк из Inbox.
- * @param {TFile} inboxFile - Файл Inbox.
- * @param {string} status - Новый статус (например, 'In progress').
- * @param {string} symbol - Символ статуса (например, '/').
+ * Перемещает запись из Inbox в Reminders.md с добавлением даты и повторения.
+ * 
+ * @param {string} originalText - Исходный текст записи.
+ * @param {Array<string>} allLines - Массив строк Inbox.
+ * @param {TFile} inboxFile - Объект файла Inbox.
+ * @param {string} dateTime - Строка с датой и временем.
+ * @param {string} recurrence - Строка с настройкой повторения (опционально).
  */
-async function updateItemStatus(originalText, allLines, inboxFile, status, symbol) {
+async function updateItemDateTime(originalText, allLines, inboxFile, dateTime, recurrence = "") {
     const index = allLines.indexOf(originalText);
     if (index === -1) return;
 
-    const currentContent = await app.vault.cachedRead(inboxFile);
-    // Обновляем строку с новым статусом.
-    allLines[index] = `- [${symbol}] ${originalText}`;
-    const updatedContent = allLines.join('\n');
+    allLines.splice(index, 1);
+    const updatedInboxContent = allLines.join('\n');
+    
+    await app.vault.modify(inboxFile, updatedInboxContent);
 
-    await updateContentAndNotify(
-        inboxFile,
-        updatedContent,
-        currentContent,
-        `Статус "${originalText}" изменен на "${status}"`
-    );
+    let remindersFile = app.vault.getAbstractFileByPath('Reminders.md');
+    
+    if (!remindersFile) {
+        remindersFile = await app.vault.create('Reminders.md', '');
+        new Notice("Создан файл Reminders.md");
+    }
+
+    const recurTag = recurrence ? `(${recurrence})` : "";
+    const newLine = `- [ ] ${originalText} ${recurTag} (@${dateTime})`;
+    
+    await app.vault.append(remindersFile, `\n${newLine}`);
+
+    new Notice(`Перемещено в Reminders: "${dateTime}"`);
 }
 
-/**
- * Обновляет дату и время для указанной строки.
- * @param {string} originalText - Исходный текст строки.
- * @param {Array} allLines - Массив всех строк из Inbox.
- * @param {TFile} inboxFile - Файл Inbox.
- * @param {string} dateTime - Выбранная дата и время.
- */
-async function updateItemDateTime(originalText, allLines, inboxFile, dateTime) {
-    const index = allLines.indexOf(originalText);
-    if (index === -1) return;
-
-    const currentContent = await app.vault.cachedRead(inboxFile);
-    // Формируем новую строку с датой и временем.
-    const newLine = `- [ ] ${originalText} (@${dateTime})`;
-    allLines[index] = newLine;
-    const updatedContent = allLines.join('\n');
-
-    await updateContentAndNotify(
-        inboxFile,
-        updatedContent,
-        currentContent,
-        `Добавлено время: "${dateTime}"`
-    );
-}
-
-// "Экспортируем" все функции, чтобы их можно было вызвать в главном скрипте.
 return {
     loadInboxData,
     updateContentAndNotify,
     addNewItemToInbox,
+    editItem,
     deleteItem,
     createTask,
-    updateItemStatus,
     updateItemDateTime
 };

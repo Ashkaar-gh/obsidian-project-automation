@@ -1,17 +1,17 @@
 /**
- * Рендер таблицы проекта: группы по статусу, оглавление, строки задач (аналогично GTD).
+ * Рендер таблицы GTD: группы по статусу, оглавление, строки задач со сменой статуса.
  */
 function renderTable(dv, container, groupedData, scrollModule, config, io, renderUtils, ui) {
     if (!groupedData || groupedData.size === 0) {
-        ui.create('p', { text: "Нет задач.", cls: 'pv-empty-message', parent: container });
+        ui.create('p', { text: "Нет активных задач.", cls: 'pv-empty-message', parent: container });
         return;
     }
+
     const groupsArray = Array.from(groupedData).sort((a, b) => {
-        const nameA = a[0];
-        const nameB = b[0];
-        if (nameA === "Ungrouped") return -1;
-        if (nameB === "Ungrouped") return 1;
-        return nameA.localeCompare(nameB);
+        const wA = config.getWeight(a[0]);
+        const wB = config.getWeight(b[0]);
+        if (wA !== wB) return wA - wB;
+        return a[0].localeCompare(b[0]);
     });
 
     const tocContainer = ui.create('div', { cls: 'pv-toc-container' });
@@ -20,14 +20,13 @@ function renderTable(dv, container, groupedData, scrollModule, config, io, rende
     const totalSummaryContainer = renderUtils.createTotalSummarySection(allTasks, config, ui);
 
     groupsArray.forEach(([groupName, tasks]) => {
-        const collapsed = renderUtils.getGroupState('project', groupName);
+        const collapsed = renderUtils.getGroupState('gtd', groupName);
         
         const tbody = ui.create('tbody', {
             cls: collapsed ? 'pv-collapsed' : undefined
         });
 
-        const displayName = groupName === "Ungrouped" ? "Задачи без группы" : groupName;
-        const displayIcon = "📝";
+        const displayIcon = config.getIcon(groupName);
         
         const headerContainer = ui.create('div', { cls: 'pv-group-header-container' });
 
@@ -38,30 +37,27 @@ function renderTable(dv, container, groupedData, scrollModule, config, io, rende
             text: '▼', 
             parent: titleDiv 
         });
-
+        
         ui.create('span', { 
             cls: 'pv-group-title-text', 
-            text: `${displayIcon} ${displayName}`, 
+            text: `${displayIcon} ${groupName}`, 
             parent: titleDiv 
         });
-
+        
         ui.create('span', { 
             cls: 'pv-group-count', 
-            html: `&nbsp;(${tasks.length})`, 
+            html: `&nbsp;(${tasks.length})`,
             parent: titleDiv 
         });
-
-        const summaryDiv = ui.create('div', { cls: 'pv-group-summary', parent: headerContainer });
-        renderUtils.fillSummaryByStatus(config, tasks, summaryDiv, ui);
 
         const groupCell = ui.create('td', {
             attr: { colSpan: 5 },
             cls: 'pv-group-cell',
-            children: [headerContainer], 
+            children: [headerContainer],
             events: {
                 click: () => {
                     tbody.classList.toggle('pv-collapsed');
-                    renderUtils.setGroupState('project', groupName, tbody.classList.contains('pv-collapsed'));
+                    renderUtils.setGroupState('gtd', groupName, tbody.classList.contains('pv-collapsed'));
                 }
             }
         });
@@ -73,7 +69,7 @@ function renderTable(dv, container, groupedData, scrollModule, config, io, rende
 
         tbody.appendChild(groupRow);
 
-        const tocBtn = renderUtils.createTocButton(displayName, tasks.length, groupRow, displayIcon, (target) => {
+        const tocBtn = renderUtils.createTocButton(groupName, tasks.length, groupRow, displayIcon, (target) => {
             if (scrollModule) {
                 scrollModule.scrollToElement(target, {
                     behavior: 'smooth',
@@ -81,7 +77,7 @@ function renderTable(dv, container, groupedData, scrollModule, config, io, rende
                         const tb = target.closest('tbody');
                         if (tb?.classList.contains('pv-collapsed')) {
                             tb.classList.remove('pv-collapsed');
-                            renderUtils.setGroupState('project', groupName, false);
+                            renderUtils.setGroupState('gtd', groupName, false);
                         }
                     }
                 });

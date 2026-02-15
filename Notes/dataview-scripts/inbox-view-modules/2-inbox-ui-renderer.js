@@ -1,30 +1,20 @@
-/**
- * Главная функция-отрисовщик. Создает корневой контейнер и наполняет его
- * формой добавления и списком элементов из Inbox.
- * @param {object} inboxData - Объект с данными, полученный от менеджера.
- * @returns {HTMLElement} - Созданный корневой DOM-элемент для всего Inbox.
+﻿/**
+ * UI Inbox: renderInbox(inboxData, ui), форма добавления, строки с кнопками (редактировать, удалить, в задачу, в напоминания).
  */
-function renderInbox(inboxData) {
-    // Создаём новый контейнер для Inbox, чтобы избежать дублирования при обновлении.
-    const container = document.createElement('div');
-    container.className = 'inbox-container';
-
-    // Добавляем форму для добавления новых записей.
-    const addItemForm = createAddItemForm();
+function renderInbox(inboxData, ui) {
+    const container = ui.create('div', { cls: 'inbox-container' });
+    const addItemForm = createAddItemForm(ui);
     container.appendChild(addItemForm);
 
-    // Если нет видимых строк для отображения.
     if (inboxData.visibleLines.length === 0) {
-        // Создаём элемент с текстом "Пусто" и курсивным начертанием.
-        const emptyMessage = document.createElement('div');
-        emptyMessage.textContent = 'Пусто';
-        emptyMessage.style.fontStyle = 'italic';
-        container.appendChild(emptyMessage);
+        ui.create('div', {
+            text: 'Пусто',
+            style: { fontStyle: 'italic', padding: '10px 0', color: 'var(--text-muted)' },
+            parent: container
+        });
     } else {
-        // Проходимся по каждой видимой строке.
         inboxData.visibleLines.forEach(line => {
-            // Создаём и добавляем элемент строки в интерфейс.
-            const lineElement = createLineElement(line, inboxData);
+            const lineElement = createLineElement(line, ui);
             container.appendChild(lineElement);
         });
     }
@@ -32,142 +22,85 @@ function renderInbox(inboxData) {
 }
 
 /**
- * Функция для создания формы добавления новой записи в Inbox.
- * @returns {HTMLElement} - Контейнер с формой.
+ * Создает форму добавления новой записи.
+ * 
+ * @param {Object} ui - Модуль UI утилит.
+ * @returns {HTMLElement} Возвращает контейнер формы.
  */
-function createAddItemForm() {
-    // Создаём контейнер для формы.
-    const formContainer = document.createElement('div');
-
-    // Создаём поле ввода с типом "text" и плейсхолдером.
-    const inputField = document.createElement('input');
-    inputField.setAttribute('type', 'text');
-    inputField.setAttribute('placeholder', 'Новая запись');
-    inputField.className = 'input-field';
-
-    // Создаём кнопку "Добавить" с классом.
-    const addButton = document.createElement('button');
-    addButton.textContent = 'Добавить';
-    addButton.className = 'add-button';
-
-    // Добавляем поле ввода и кнопку в контейнер формы.
-    formContainer.appendChild(inputField);
-    formContainer.appendChild(addButton);
-
-    return formContainer;
+function createAddItemForm(ui) {
+    const input = ui.input('Добавить запись');
+    const btn = ui.btn('Добавить');
+    
+    return ui.formContainer([input, btn]);
 }
 
 /**
- * Функция для создания нового элемента строки в интерфейсе.
+ * Создает визуальный элемент строки списка.
+ * 
  * @param {string} line - Текст строки.
- * @param {object} inboxData - Объект с данными.
- * @returns {HTMLElement} - Созданный контейнер строки.
+ * @param {Object} ui - Модуль UI утилит.
+ * @returns {HTMLElement} Возвращает элемент строки.
  */
-function createLineElement(line, inboxData) {
-    // Создаём контейнер для строки с классом.
-    const lineContainer = document.createElement('div');
-    lineContainer.className = 'line-divider';
-    // Сохраняем оригинальный текст в data-атрибуте для легкого доступа.
-    lineContainer.dataset.originalText = line;
+function createLineElement(line, ui) {
+    const lineContainer = ui.create('div', {
+        cls: 'inbox-line',
+        attr: { 'data-original-text': line }
+    });
 
-    // Создаём элемент текста со строкой.
-    const textElement = document.createElement('span');
-    textElement.textContent = line;
+    ui.create('span', {
+        cls: 'inbox-text',
+        text: line,
+        parent: lineContainer
+    });
 
-    // Создаём контейнер с кнопками для строки.
-    const buttonContainer = createButtons();
-    // Скрываем контейнер с кнопками по умолчанию.
-    buttonContainer.style.visibility = 'hidden';
-
-    // Добавляем текстовый элемент и контейнер с кнопками в контейнер строки.
-    lineContainer.appendChild(textElement);
+    const buttonContainer = createButtons(ui);
     lineContainer.appendChild(buttonContainer);
 
     return lineContainer;
 }
 
 /**
- * Функция для создания набора кнопок (Статус, Календарь, Задача, Удалить) для каждой строки.
- * @returns {HTMLElement} - Контейнер с кнопками.
+ * Генерирует кнопки действий для элемента списка.
+ * 
+ * @param {Object} ui - Модуль UI утилит.
+ * @returns {HTMLElement} Возвращает контейнер кнопок.
  */
-function createButtons() {
-    // Создаём контейнер для кнопок.
-    const buttonContainer = document.createElement('div');
-    buttonContainer.className = 'button-container';
-
-    // ИЗМЕНЕНИЕ: Теперь мы используем массив объектов.
-    // 'label' - то, что видит пользователь.
-    // 'action' - надежный ключ для нашей логики.
-    const buttonConfigs = [
-        { label: 'Статус', action: 'status' },
-        { label: 'Календарь', action: 'calendar' },
+function createButtons(ui) {
+    const buttonContainer = ui.create('div', { cls: 'inbox-actions' });
+    
+    const actions = [
         { label: 'Задача', action: 'task' },
+        { label: 'Изменить', action: 'edit' },
+        { label: 'Календарь', action: 'calendar' },
         { label: 'Удалить', action: 'delete' }
     ];
 
-    // Проходимся по каждой конфигурации.
-    buttonConfigs.forEach(config => {
-        // Создаём кнопку с текстом из 'label'.
-        const button = document.createElement('button');
-        button.textContent = config.label;
-        button.className = 'dropdown-button';
-        // Устанавливаем data-атрибут из 'action'.
-        button.dataset.action = config.action;
-        // Добавляем кнопку в контейнер кнопок.
-        buttonContainer.appendChild(button);
+    actions.forEach(conf => {
+        const btn = ui.actionBtn(conf.label, conf.action);
+        buttonContainer.appendChild(btn);
     });
 
     return buttonContainer;
 }
 
 /**
- * Функция для создания меню статусов.
- * @returns {HTMLElement} - Контейнер меню с элементами статусов.
+ * Создает меню выбора даты.
+ * 
+ * @param {Object} ui - Модуль UI утилит.
+ * @returns {HTMLElement} Возвращает элемент меню.
  */
-function createStatusMenu() {
-    const menu = document.createElement('div');
-    menu.className = 'status-menu';
-
-    // Определяем доступные статусы с соответствующими символами.
-    const statuses = [
-        { status: 'In progress', symbol: '/' }, // Статус "В процессе"
-        { status: 'To do', symbol: '<' }, // Статус "Выполнить"
-        { status: 'Waiting', symbol: '>' } // Статус "Ожидание"
-    ];
-
-    // Проходимся по каждому статусу.
-    statuses.forEach(({ status, symbol }) => {
-        // Создаём элемент меню для статуса.
-        const menuItem = document.createElement('div');
-        menuItem.className = 'menu-item';
-        menuItem.textContent = status;
-        // Сохраняем данные в атрибутах для обработчика событий.
-        menuItem.dataset.status = status;
-        menuItem.dataset.symbol = symbol;
-        menu.appendChild(menuItem);
+function createCalendarMenu(ui) {
+    const menu = ui.create('div', { cls: 'calendar-menu' });
+    
+    const dateField = ui.dateInput(null, {
+        style: { width: '200px' }
     });
+
+    menu.appendChild(dateField);
     return menu;
 }
 
-/**
- * Функция для создания меню календаря, позволяющего установить дату и время.
- * @returns {HTMLElement} - Контейнер меню с полем ввода даты и времени.
- */
-function createCalendarMenu() {
-    const menu = document.createElement('div');
-    menu.className = 'calendar-menu';
-
-    // Создаём поле ввода с типом "datetime-local".
-    const datetimeInput = document.createElement('input');
-    datetimeInput.setAttribute('type', 'datetime-local');
-    menu.appendChild(datetimeInput);
-
-    return menu;
-}
-
-// "Экспортируем" основные функции отрисовки.
 return {
     renderInbox,
-    createStatusMenu,
     createCalendarMenu
 };

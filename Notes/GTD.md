@@ -1,69 +1,28 @@
 ---
 cssclasses:
   - wide-page
-obsidianUIMode: preview
+  - three-column-grid-list
 ---
-[[GTD-scheme.canvas|GTD-scheme]]
-[[Inbox]]
-[[Trash]]
+- [[Reminders]]
+- [[Inbox]]
+- [[Trash]]
 
-#### In progress
-```tasks
-path does not include kanban
-path does not include templates
-status.name includes unknown
-no due date
-no scheduled date
-is not blocked
-```
-##### Blocked
-```tasks
-path does not include kanban
-path does not include templates
-status.name includes unknown
-no due date
-no scheduled date
-is blocked
-```
-##### Recurring
-```tasks
-is recurring
-not done
-sort by scheduled
-```
-
-#### To do
-```tasks
-status.type is in_progress
-path does not include kanban
-path does not include templates
-no due date
-no scheduled date
-```
-
-#### Waiting
-```tasks
-status.type is NON_TASK
-path does not include kanban
-path does not include templates
-no due date
-no scheduled date
-```
-
-#### Inbox
+#### Напоминания
 ```dataviewjs
-// Вызываем внешний скрипт и передаем ему объект 'obsidian' в качестве входных данных.
+await dv.view("dataview-scripts/reminders-view", { obsidian: obsidian });
+```
+
+#### Входящие
+```dataviewjs
 await dv.view("dataview-scripts/inbox-view", { obsidian: obsidian });
 ```
 
-#### Trash
+#### Корзина
 ```dataviewjs
-// Вызываем внешний скрипт
 await dv.view("dataview-scripts/trash-view");
 ```
 
-#### Done this week
-```tasks
-done this week
-sort by done reverse
+#### Доска задач
+```dataviewjs
+await dv.view("dataview-scripts/gtd-view", { obsidian: obsidian });
 ```
