@@ -1,3 +1,5 @@
-body .wide-page { 
-    --file-line-width: 100%; 
+/* Ширина контента на всю доступную ширину для страниц с классом wide-page. */
+
+body .wide-page {
+    --file-line-width: 100%;
 }

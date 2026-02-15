@@ -1,148 +1,224 @@
 /**
- * Инициализирует всю интерактивность для представления задачи.
- * Эта функция прикрепляет все необходимые глобальные и локальные слушатели событий
- * и возвращает функцию для их последующей очистки, чтобы избежать утечек памяти.
- * @param {object} dv - Объект API Dataview.
- * @param {object} obsidian - Глобальный объект Obsidian API.
- * @param {object} app - Глобальный объект Obsidian App.
- * @param {HTMLElement} container - Корневой HTML-элемент блока Dataview, в котором работает скрипт.
- * @param {object} context - Объект общего состояния, содержащий данные и ссылку на активное поле редактирования.
- * @param {Function} render - Функция для полного перерендеринга представления, вызывается после сохранения.
- * @returns {Function} - Функция `cleanup`, вызов которой удаляет все добавленные слушатели событий.
+ * События task-view: клики, контекстное меню, горячие клавиши; редактирование секции в файле, копирование кода, скролл к секции. Возвращает cleanup.
  */
-function initialize(dv, obsidian, app, container, context, render) {
-    
-    /**
-     * Сохраняет измененный контент из <textarea> обратно в исходный файл ежедневной заметки.
-     * Также управляет переключением UI из режима редактирования в режим отображения.
-     * @async
-     * @param {HTMLTextAreaElement} textarea - Элемент <textarea>, содержимое которого нужно сохранить.
-     * @returns {Promise<void>} - Промис, который разрешается после завершения операции сохранения.
-     */
+function initialize(dv, obsidian, app, container, context, render, scrollModule, copyModule) {
+
+    /** Сохранить текст из textarea в entry.sourcePath (замена блока content по contentStartOffset..contentEndOffset). */
     async function handleSave(textarea) {
         if (!textarea) return;
         const parentDetails = textarea.closest('details');
         if (!parentDetails) return;
-        // Получаем индекс записи из data-атрибута, чтобы найти нужный объект в массиве данных.
         const entryIndex = parentDetails.dataset.entryIndex;
+
+        if (!context.structuredData || !context.structuredData[entryIndex]) return;
+
         const entry = context.structuredData[entryIndex];
         const newContent = textarea.value;
-        // Сбрасываем ссылку на активное поле редактирования.
         context.activeEditArea = null;
-        // Скрываем поле редактирования и снова показываем блок отображения.
         textarea.style.display = 'none';
-        textarea.previousElementSibling.style.display = 'block';
-        // Если контент не изменился, ничего не делаем, чтобы не перезаписывать файл без надобности.
-        if (newContent.trim() === entry.content.trim()) { return; }
+
+        const displayDiv = textarea.previousElementSibling;
+        if (displayDiv) displayDiv.style.display = 'block';
+
+        if (newContent.trim() === entry.content.trim()) return;
+
         const file = app.vault.getAbstractFileByPath(entry.sourcePath);
         if (!file) return;
-        // Читаем оригинальный файл и "собираем" его заново с измененным контентом.
-        const originalFileContent = await app.vault.read(file);
+
+        const originalFileContent = await dv.io.load(entry.sourcePath);
+        if (originalFileContent == null) return;
         const prefix = originalFileContent.substring(0, entry.contentStartOffset);
         const suffix = originalFileContent.substring(entry.contentEndOffset);
-        // Сохраняем новый контент в отдельную переменную для возможной модификации.
         let finalContent = newContent;
-        
-        // Проверяем два условия: есть ли какой-то текст после нашей секции (т.е. это не конец файла) и не заканчивается ли наш новый текст уже на перенос строки.
-        if (suffix.length > 0 && !finalContent.endsWith('\n')) {
-            // Если оба условия верны, добавляем два переноса строки.
-            finalContent += '\n\n';
-        } else if (suffix.length > 0 && !finalContent.endsWith('\n\n') && finalContent.endsWith('\n')) {
-            // Если есть только один перенос строки, добавляем второй для лучшего форматирования.
-            finalContent += '\n';
-        }
-        
-        // Собираем файл с уже гарантированно отформатированным контентом.
+
+        if (suffix.length > 0 && !finalContent.endsWith('\n')) finalContent += '\n\n';
+        else if (suffix.length > 0 && !finalContent.endsWith('\n\n') && finalContent.endsWith('\n')) finalContent += '\n';
+
         await app.vault.modify(file, prefix + finalContent + suffix);
     }
 
-    // Единый обработчик для всех кликов и правых кликов ВНУТРИ контейнера Dataview.
-    const containerInteractionHandler = (event) => {
-        // Игнорируем события, произошедшие вне нашего контейнера.
+    const containerInteractionHandler = async (event) => {
         if (!container.contains(event.target)) return;
-        // Обработка левого клика.
+
         if (event.type === 'click') {
-            // Ищем клик по заголовку сворачиваемого блока.
-            const summary = event.target.closest('.task-view-summary');
-            if (summary) {
-                event.preventDefault();
-                // Если клик был именно по кнопке, вручную переключаем состояние блока.
-                const button = event.target.closest('.task-view-collapse-button');
-                if (button) {
-                    const details = summary.closest('details');
-                    if (details) {
-                        details.toggleAttribute('open');
-                        button.textContent = details.hasAttribute('open') ? '▼' : '◀';
-                    }
+            const copyBtn = event.target.closest('.task-view-copy-btn');
+            if (copyBtn) {
+                event.preventDefault(); event.stopPropagation();
+                const pre = copyBtn.closest('pre');
+                const codeEl = pre && pre.querySelector('code');
+                if (codeEl) {
+                    try {
+                        const codeText = (codeEl.textContent || '').replace(/\n+$/, '');
+                        const cls = (pre.className || '') + ' ' + (codeEl.className || '');
+                        const langMatch = cls.match(/\blanguage-(\S+)\b/);
+                        const lang = langMatch ? langMatch[1] : '';
+                        const wrapped = (lang ? '```' + lang + '\n' : '```\n') + codeText + '\n```';
+                        await navigator.clipboard.writeText(wrapped);
+                        const checkIcon = obsidian.getIcon('check'), copyIcon = obsidian.getIcon('copy');
+                        copyBtn.innerHTML = checkIcon ? checkIcon.outerHTML : '&#10003;';
+                        copyBtn.classList.add('copied');
+                        setTimeout(() => {
+                            copyBtn.innerHTML = copyIcon ? copyIcon.outerHTML : '&#128203;';
+                            copyBtn.classList.remove('copied');
+                        }, 2000);
+                    } catch (err) { console.error(err); }
                 }
                 return;
             }
-            // Ищем клик по ссылке в оглавлении.
-            const tocLink = event.target.closest('a[data-scroll-to-id]');
-            if (tocLink) {
+
+            const summary = event.target.closest('.task-view-summary');
+            if (summary) {
+                const collapseBtn = event.target.closest('.task-view-collapse-button');
+                /** Кнопка сворачивания/разворачивания details. */
+                if (collapseBtn) {
+                    event.preventDefault(); event.stopPropagation();
+                    const details = summary.closest('details');
+                    if (details) {
+                        details.hasAttribute('open') ? details.removeAttribute('open') : details.setAttribute('open', '');
+                        collapseBtn.textContent = details.hasAttribute('open') ? '▼' : '◀';
+                    }
+                    return;
+                }
+                if (event.target.closest('a')) return;
                 event.preventDefault();
-                const elementToScroll = document.getElementById(tocLink.dataset.scrollToId);
-                if (elementToScroll) {
-                    const parentDetails = elementToScroll.closest('details');
-                    if (!parentDetails) return;
-                    // Функция для выполнения прокрутки.
-                    const performScroll = () => { elementToScroll.scrollIntoView({ behavior: 'auto', block: 'start' }); };
-                    // Если блок уже открыт, просто скроллим. Иначе - сначала открываем, потом скроллим.
-                    if (parentDetails.hasAttribute('open')) { performScroll(); } 
-                    else { parentDetails.setAttribute('open', ''); requestAnimationFrame(() => setTimeout(performScroll, 0)); }
+                return;
+            }
+
+            const tocLink = event.target.closest('a[data-scroll-to-id]');
+            /** Клик по пункту оглавления — скролл к секции (explicitScroll + при необходимости раскрыть details). */
+            if (tocLink) {
+                event.preventDefault(); event.stopPropagation();
+                const targetId = tocLink.dataset.scrollToId;
+                const elementToScroll = document.getElementById(targetId);
+
+                if (elementToScroll && scrollModule) {
+                    const parentDetails = elementToScroll.closest('details.task-view-entry');
+
+                    scrollModule.scrollToElement(elementToScroll, {
+                        explicitScroll: true,
+                        behavior: 'auto',
+                        offset: 0,
+                        delay: 250,
+                        scrollAgainDelay: 450,
+                        onBeforeScroll: () => {
+                            if (parentDetails && !parentDetails.hasAttribute('open')) {
+                                parentDetails.open = true;
+                                const btn = parentDetails.querySelector('.task-view-collapse-button');
+                                if (btn) btn.textContent = '▼';
+                            }
+                        }
+                    });
                 }
                 return;
             }
         }
-        // Обработка правого клика для перехода в режим редактирования.
+
         if (event.type === 'contextmenu') {
+            /** ПКМ по контенту секции — переключить в режим редактирования (textarea). */
             const displayDiv = event.target.closest('.task-view-display');
             if (displayDiv) {
                 event.preventDefault();
-                // Если уже есть активное поле редактирования, сначала сохраняем его.
                 if (context.activeEditArea) handleSave(context.activeEditArea);
-                const editArea = displayDiv.nextElementSibling;
-                displayDiv.style.display = 'none';
-                editArea.style.display = 'block';
-                // Автоматически подстраиваем высоту поля под содержимое.
-                editArea.style.height = 'auto';
-                editArea.style.height = (editArea.scrollHeight) + 'px';
-                editArea.focus();
-                // Сохраняем ссылку на активное поле в общем контексте.
+                const detailsEl = displayDiv.closest('details');
+                const previewWrap = displayDiv.closest('.markdown-preview-view');
+                const editArea = detailsEl && detailsEl.querySelector('.task-view-edit');
+                if (previewWrap) previewWrap.style.display = 'none';
+                if (editArea) editArea.style.display = 'block';
+                if (editArea) {
+                    editArea.style.height = 'auto';
+                    editArea.style.height = (editArea.scrollHeight + 10) + 'px';
+                }
                 context.activeEditArea = editArea;
             }
         }
     };
 
-    // Глобальный обработчик для выхода из режима редактирования (клик вне поля или нажатие Escape).
+    /** Выход из редактирования: Escape или клик снаружи; не срабатывает при клике по скроллбару. */
     const globalExitHandler = (event) => {
         if (!context.activeEditArea) return;
-        const isEscape = event.type === 'keydown' && event.key === 'Escape';
-        const isClickOutside = event.type === 'mousedown' && !context.activeEditArea.contains(event.target);
-        if (isEscape || isClickOutside) {
-            event.preventDefault();
-            event.stopPropagation();
+
+        if (event.type === 'keydown' && event.key === 'Escape') {
+            handleSave(context.activeEditArea);
+            return;
+        }
+
+        if (event.type === 'mousedown') {
+            const target = event.target;
+
+            if (context.activeEditArea.contains(target)) return;
+
+            const rect = target.getBoundingClientRect();
+            const clickX = event.clientX - rect.left;
+            const clickY = event.clientY - rect.top;
+
+            const hitVerticalScrollbar = (target.offsetWidth > target.clientWidth) &&
+                                       (clickX >= target.clientWidth);
+
+            const hitHorizontalScrollbar = (target.offsetHeight > target.clientHeight) &&
+                                         (clickY >= target.clientHeight);
+
+            if (hitVerticalScrollbar || hitHorizontalScrollbar) return;
+
+            const isScrollable = target.scrollHeight > target.clientHeight;
+            const isRightEdge = (rect.width - clickX) <= 20;
+
+            const isWindowScrollbar = (window.innerWidth - event.clientX) <= 20;
+
+            if ((isScrollable && isRightEdge) || isWindowScrollbar) {
+                return;
+            }
+
             handleSave(context.activeEditArea);
         }
     };
 
-    // Функция, которая удаляет всех наших слушателей. Она будет возвращена из `initialize`.
+    /** Копирование: только внутри .task-view-display; один pre — copyPartFromPre, иначе fragmentToCopyText. */
+    const copyHandler = (e) => {
+        if (!copyModule) return;
+        const sel = window.getSelection();
+        if (!sel.rangeCount || !container.contains(sel.anchorNode)) return;
+        const anchorEl = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
+        const display = anchorEl && anchorEl.closest ? anchorEl.closest('.task-view-display') : null;
+        if (!display || !container.contains(display)) return;
+        if (!sel.toString()) return;
+
+        const focusEl = sel.focusNode && (sel.focusNode.nodeType === 1 ? sel.focusNode : sel.focusNode.parentElement);
+        const pre = anchorEl && anchorEl.closest ? anchorEl.closest('pre') : null;
+        const samePre = pre && focusEl && pre.contains(focusEl);
+        if (pre && samePre) {
+            e.preventDefault();
+            const selectedText = (sel.toString() || '').trim();
+            const codeEl = pre.querySelector('code');
+            const fullText = (codeEl ? codeEl.textContent : pre.textContent || '').replace(/\n+$/, '').trim();
+            const isSingleLineBlock = !fullText.includes('\n');
+            if (selectedText && (selectedText !== fullText || isSingleLineBlock)) {
+                e.clipboardData.setData('text/plain', selectedText);
+            } else {
+                e.clipboardData.setData('text/plain', copyModule.copyPartFromPre(pre));
+            }
+            return;
+        }
+
+        const fragment = sel.getRangeAt(0).cloneContents();
+        e.preventDefault();
+        e.clipboardData.setData('text/plain', copyModule.fragmentToCopyText(fragment));
+    };
+
     const cleanup = () => {
-        document.removeEventListener('click', containerInteractionHandler, true);
-        document.removeEventListener('contextmenu', containerInteractionHandler, true);
+        container.removeEventListener('click', containerInteractionHandler);
+        container.removeEventListener('contextmenu', containerInteractionHandler);
+        container.removeEventListener('copy', copyHandler);
         document.removeEventListener('mousedown', globalExitHandler, true);
         document.removeEventListener('keydown', globalExitHandler, true);
     };
 
-    // Прикрепляем слушатели к документу. Использование `true` (capturing phase) помогает перехватывать события надежнее.
-    document.addEventListener('click', containerInteractionHandler, true);
-    document.addEventListener('contextmenu', containerInteractionHandler, true);
+    container.addEventListener('click', containerInteractionHandler);
+    container.addEventListener('contextmenu', containerInteractionHandler);
+    container.addEventListener('copy', copyHandler);
     document.addEventListener('mousedown', globalExitHandler, true);
     document.addEventListener('keydown', globalExitHandler, true);
-    
-    // Возвращаем функцию очистки, чтобы главный скрипт мог вызвать ее при выгрузке.
+
     return cleanup;
 }
 
-// "Экспортируем" основную функцию инициализации.
 return { initialize };

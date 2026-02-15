@@ -1,22 +1,14 @@
-# Алгоритм работы
-1. Создаем заметку с типом kanban.
-Для удобства можно создать несколько kanban досок, например, для работы, личных дел и хобби.
-- Kanban доска автоматически добаляется в заметку Homepage.
-2. Создаем заметку с типом проект.
-В проекте отображаются все его задачи с датами, статусами и ссылками.
-- Проект автоматически добавляется в заметку Homepage.
-3. Создаем заметку с типом задача.
-В задаче отображается все содержание из ежедневных заметок, относящееся к этой задаче.
-- Автоматически создается ежедневная заметка текущего дня, в которую добавляется заголовок задачи.
-- Задача автоматически попадает в выбранную kanban доску в колонку "В работе".
-4. Вносим записи в ежедневную заметку под заговком задачи.
+# Obsidian Project Automation
+Набор шаблонов и скриптов для автоматизации проектов и задач в Obsidian: GTD-воркфлоу (входящие, напоминания, доска задач), создание заметок по типам и интеграция с ежедневными заметками.
 
 # Используемые плагины
 ## Templater
 Шаблон main должен применяться ко всем вновь созданным заметкам. Это можно реализовать в настройках плагина templater. В разделе Folder templates в качестве директории нужно выбрать / (корень), а в качестве шаблона - main.md.
-Для ежедневных заметок используем шаблон daily.md.
 
 <img width="587" height="512" alt="Screenshot 2025-09-02 221854" src="https://github.com/user-attachments/assets/bb8bc332-8ac6-45da-a91d-5901ca03d04c" />
+
+Для ежедневных заметок используем шаблон daily.md. При старте загружается шаблон startup.md.
+<img width="700" height="170" alt="изображение" src="https://github.com/user-attachments/assets/7a6ec0db-e7f3-4b8c-9333-a0a398f88406" />
 
 Добавляем каталог templater-scripts, в котором лежат js функции используемые в шаблонах
 <img width="700" height="140" alt="image" src="https://github.com/user-attachments/assets/bb9ba497-2da6-4a17-80a7-9fa6762a8a36" />
@@ -26,19 +18,7 @@
 ## Periodic Notes
 Надо задать формат даты и папку для хранения ежедневных заметок.
 ![image](https://github.com/user-attachments/assets/25c76431-2adc-4463-b44f-affa2f43645a)
-## Kanban
-Все доски лежат в каталоге kanban.
 
-В доске используем следующие колонки: 
-- Backlog
-- To do
-- В работе
-- Тестирование
-- Done
-- Canceled
-- Повторяющиеся
-
-![image](https://github.com/user-attachments/assets/eb5c42b8-82f0-4474-89f7-638d981d7b54)
 ## Dataview
 Включаем поддержку JS
 ![image](https://github.com/user-attachments/assets/aabe23f7-a72d-49fc-a793-366aca079b75)
@@ -46,46 +26,21 @@
 
 <img width="563" height="64" alt="Screenshot 2025-09-16 205913" src="https://github.com/user-attachments/assets/727dc5d4-a830-47ae-acc1-0fd61735864b" />
 
-## Tasks
-Задача без статуса сначала получает статус To do, при следующем нажатии - In progress, при следующем - Done.
-
-![image](https://github.com/user-attachments/assets/fd59195e-b44d-4e8e-8369-e80aec89ec3d)
-
 # Шаблоны
-## main
-Это центральный шаблон, в котором выбирается тип создаваемой заметки.
-
-![image](https://github.com/user-attachments/assets/594d11c0-b670-4acd-a36e-6621084e9491)
-
-## kanban
-Шаблон для заметок с типом kanban.
-
-![image](https://github.com/user-attachments/assets/e2cedef0-5c26-4314-babb-74875a219a46)
-
 ## project
 Шаблон для заметок с типом проект.
 
-![image](https://github.com/user-attachments/assets/5173b5c7-6d6a-4b06-9d38-95002f0271e8)
+<img width="1984" height="705" alt="изображение" src="https://github.com/user-attachments/assets/4ee36f09-fa41-40a2-9824-282865c651f3" />
 
 ## task
 Шаблон для заметок с типом задача.
 
-![image](https://github.com/user-attachments/assets/04fe4c3b-ea5a-4764-ac72-b6250cac31b0)
+<img width="1977" height="1175" alt="изображение" src="https://github.com/user-attachments/assets/9cc3732b-011f-4381-930d-2a2b4d931f02" />
 
 ## daily
 Шаблон для ежедневных заметок.
 
-![image](https://github.com/user-attachments/assets/b517d996-2079-49f1-85b8-6e00562403c4)
-
-# Обновление
-Существующие заметки с типами проект и задача можно обновить скриптом, который находится в заметке Updater.md.
-Назначение скрипта:
-1. Найти все проекты и задачи
-2. Проверить их frontmatter и код на соответствие актуальным шаблонам
-3. Автоматически исправить типовые ошибки (регистр, cssclasses, устаревший dataviewjs)
-4. Сформировать отчет о проблемах, требующих ручного вмешательства (добавление полей kanban, date)
-
-Перед запуском скприпта обязательно сделайте полный бекап всего каталога с заметками.
+<img width="250" height="159" alt="изображение" src="https://github.com/user-attachments/assets/c048075a-0880-4c15-8b09-2a0bc5eb7cf6" />
 
 # Ссылки
 - Dataview JavaScript API: https://blacksmithgu.github.io/obsidian-dataview/api/intro/
