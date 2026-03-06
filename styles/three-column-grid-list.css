@@ -1,0 +1,13 @@
+/* Трёхколоночная сетка для списков на страницах с классом three-column-grid-list (от 600px). */
+
+@media (min-width: 600px) {
+    .three-column-grid-list div > ul {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        grid-column-gap: 32px;
+    }
+}
+
+.three-column-grid-list div > ul > li {
+    padding: 2px;
+}

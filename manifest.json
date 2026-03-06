@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-project-automation",
+  "name": "Obsidian Project Automation",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "Шаблоны и скрипты для автоматизации проектов и задач.",
+  "author": "",
+  "isDesktopOnly": false
+}

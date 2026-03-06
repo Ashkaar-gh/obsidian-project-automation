@@ -1,0 +1,22 @@
+{
+  "name": "obsidian-project-automation",
+  "version": "0.1.0",
+  "description": "Obsidian Project Automation: шаблоны и скрипты для автоматизации проектов и задач",
+  "main": "main.js",
+  "scripts": {
+    "build": "node build-bundle.js",
+    "build:tsc": "tsc",
+    "watch": "tsc --watch",
+    "install-plugin": "node copy-plugin.js",
+    "verify": "node verify-plugin.js"
+  },
+  "keywords": ["obsidian", "plugin"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "esbuild": "^0.24.0",
+    "obsidian": "latest",
+    "typescript": "~5.3.0"
+  }
+}

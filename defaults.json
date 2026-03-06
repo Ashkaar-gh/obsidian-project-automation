@@ -1,0 +1,12 @@
+{
+  "contextOptions": "личное, работа",
+  "environmentOptions": "prod, dev",
+  "projects": ["Проекты/Тест"],
+  "gamification": {
+    "defaultShop": [
+      { "name": "1 час игры", "cost": 10, "description": "Без чувства вины" },
+      { "name": "Покупка «хотелки»", "cost": 200, "description": "Гаджет, игра, вкусняшка" },
+      { "name": "День безделья", "cost": 500, "description": "Абсолютный отдых без вины" }
+    ]
+  }
+}
