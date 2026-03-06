@@ -1,0 +1,361 @@
+/* Пул активностей (Logbook): блок opa-activities-view и модалка статистики */
+
+.opa-activities-view .opa-section-body {
+  padding-top: 0.25rem;
+}
+
+.opa-activities-empty {
+  color: var(--text-muted);
+  font-size: 0.9em;
+  margin: 0.5rem 0;
+}
+
+.opa-activities-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+
+.opa-activity-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.opa-activity-row:last-of-type {
+  border-bottom: none;
+}
+
+/* В блоке на главной: имя не растягивается, кнопка «Удалить» прижата к тексту, видна только при наведении */
+.opa-activities-list:not(.opa-all-activities-list) .opa-activity-name {
+  flex: 0 1 auto;
+}
+.opa-activity-counter {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex-shrink: 0;
+  margin-left: 0.35rem;
+}
+.opa-activity-counter-btn {
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.opa-activity-counter-btn:hover {
+  background: var(--interactive-hover);
+  color: var(--text-normal);
+  border-color: var(--background-modifier-border-hover);
+}
+.opa-activity-counter-value {
+  min-width: 1.25rem;
+  text-align: center;
+  font-size: 0.9em;
+  color: var(--text-normal);
+}
+.opa-activity-uncheck-btn {
+  flex-shrink: 0;
+  margin-left: 0.35rem;
+}
+.opa-activities-list:not(.opa-all-activities-list) .opa-activity-uncheck-btn {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.opa-activities-list:not(.opa-all-activities-list) .opa-activity-row:hover .opa-activity-uncheck-btn {
+  visibility: visible;
+  opacity: 1;
+}
+
+.opa-activity-check-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.opa-activity-check {
+  flex-shrink: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.opa-activity-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.95em;
+  color: var(--text-normal);
+}
+.opa-activity-last {
+  flex-shrink: 0;
+  font-size: 0.8em;
+  color: var(--text-muted);
+  margin-left: auto;
+  padding-left: 0.5rem;
+}
+
+.opa-activity-del {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1.2em;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.opa-activity-del:hover {
+  color: var(--text-error);
+  background: var(--background-modifier-hover);
+}
+
+.opa-activities-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.opa-activities-btn {
+  font-size: 0.88em;
+}
+
+/* Модалка статистики */
+.opa-stats-modal-wrap .modal-close-button {
+  display: none;
+}
+.opa-activities-stats-modal {
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+}
+.opa-stats-modal-wrap .modal-content {
+  max-height: 85vh;
+  overflow-y: auto;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box;
+}
+.opa-stats-modal-wrap.modal {
+  min-width: 400px;
+  width: min(900px, 95vw) !important;
+  max-width: 95vw !important;
+}
+.opa-activities-stats-modal .opa-stats-activity-section {
+  margin-bottom: 0.5rem;
+  width: 100%;
+  min-width: 0;
+}
+.opa-activities-stats-modal .opa-stats-activity-header {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  padding: 0.35rem 0;
+  border-radius: 4px;
+  margin-bottom: 0;
+}
+.opa-activities-stats-modal .opa-stats-activity-header:hover {
+  background: var(--background-modifier-hover);
+}
+.opa-activities-stats-modal .opa-stats-collapse-arrow {
+  font-size: 0.75em;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.opa-activities-stats-modal .opa-stats-activity-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-normal);
+}
+.opa-activities-stats-modal .opa-stats-chart-body {
+  margin-left: 0;
+  margin-bottom: 0.5rem;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.opa-activities-stats-modal .opa-stats-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.opa-stats-activity-section {
+  margin-bottom: 1.5rem;
+}
+.opa-stats-activity-section:last-child {
+  margin-bottom: 0;
+}
+.opa-stats-activity-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem 0;
+  color: var(--text-normal);
+}
+
+.opa-stats-grid-wrap {
+  margin-bottom: 0.5rem;
+}
+.opa-stats-month-label {
+  font-size: 0.8em;
+  color: var(--text-muted);
+}
+
+.opa-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+  max-width: 280px;
+  margin-top: 0.25rem;
+}
+
+.opa-stats-cell {
+  aspect-ratio: 1;
+  min-width: 12px;
+  min-height: 12px;
+  max-width: 24px;
+  max-height: 24px;
+  border-radius: 3px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+}
+.opa-stats-cell-empty {
+  background: transparent;
+  border-color: transparent;
+}
+.opa-stats-cell-done {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+}
+.opa-stats-cell-future {
+  opacity: 0.5;
+}
+
+/* Линейный график за 30 дней */
+.opa-activities-stats-modal .opa-stats-chart-wrap {
+  margin-top: 0.75rem;
+  margin-bottom: 0.5rem;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.opa-activities-stats-modal .opa-stats-line-chart {
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0;
+  height: 100px;
+  display: block;
+  box-sizing: border-box;
+}
+.opa-activities-stats-modal .opa-stats-chart-svg {
+  width: 100% !important;
+  max-width: none !important;
+  height: 100%;
+  overflow: visible;
+  display: block;
+}
+.opa-chart-axis {
+  stroke: var(--background-modifier-border);
+  stroke-width: 1;
+}
+.opa-chart-line {
+  stroke: var(--interactive-accent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.opa-chart-label {
+  font-size: 10px;
+  fill: var(--text-muted);
+  font-family: var(--font-interface);
+}
+
+/* Модалка «Все активности» */
+.opa-all-activities-modal-wrap .modal-close-button {
+  display: none;
+}
+.opa-all-activities-modal .opa-all-activities-footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--background-modifier-border);
+}
+.opa-all-activities-modal .opa-all-activities-footer button {
+  width: auto;
+}
+.opa-all-activities-modal .opa-all-activities-pool-section {
+  margin-top: 1.25rem;
+  margin-bottom: 0;
+}
+.opa-all-activities-modal .opa-all-activities-subtitle {
+  font-size: 0.95em;
+  font-weight: 600;
+  margin: 0 0 0.35rem 0;
+  color: var(--text-normal);
+}
+.opa-all-activities-modal .opa-activities-modal-form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.opa-all-activities-modal .opa-activities-modal-form .view-btn,
+.opa-all-activities-modal .opa-activities-modal-form .mod-cta {
+  margin-left: auto;
+}
+.opa-all-activities-modal .opa-activity-row .gamification-shop-modal-del {
+  flex-shrink: 0;
+}
+.opa-all-activities-modal .opa-activities-input {
+  flex: 1;
+  min-width: 0;
+}
+.opa-all-activities-modal .opa-all-activities-list {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin-bottom: 0.5rem;
+}
+
+/* Форма добавления активности в модалке */
+.opa-activities-modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.opa-activities-input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.95em;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+.opa-activities-modal-btns {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}

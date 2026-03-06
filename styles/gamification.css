@@ -1,0 +1,518 @@
+.gamification-dashboard {
+    --g-xp-bg: var(--background-secondary);
+    --g-xp-fill: var(--interactive-accent);
+    padding: 0.75rem 0;
+}
+.gamification-level {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+}
+.gamification-level-value {
+    color: var(--interactive-accent);
+}
+.gamification-rank {
+    margin-left: 0.35em;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+.gamification-xp-wrap {
+    height: 12px;
+    background: var(--g-xp-bg);
+    border-radius: 6px;
+    overflow: hidden;
+    margin-bottom: 0.35rem;
+}
+.gamification-xp-bar {
+    height: 100%;
+    background: var(--g-xp-fill);
+    border-radius: 6px;
+    transition: width 0.3s ease;
+}
+.gamification-xp-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-bottom: 0.75rem;
+}
+.gamification-gold {
+    font-size: 1rem;
+    margin-bottom: 0.35rem;
+}
+.gamification-streaks-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+    margin-bottom: 5px;
+}
+.gamification-streak-badge {
+    background: rgba(var(--interactive-accent-rgb), 0.15);
+    border: 1px solid rgba(var(--interactive-accent-rgb), 0.3);
+    color: var(--text-normal);
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.85em;
+    font-weight: 500;
+}
+.gamification-buttons-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+.view-modal.gamification-completed-modal,
+.modal.gamification-completed-modal {
+    min-width: 640px;
+    width: min(780px, 94vw);
+}
+.opa-gamification-modal .modal-close-button,
+.gamification-levelup-modal .modal-close-button {
+    display: none;
+}
+.gamification-completed-modal .gamification-completed-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-width: 0;
+    overflow-x: auto;
+}
+.gamification-completed-section-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin: 0 0 0.35rem 0;
+}
+.gamification-completed-modal .gamification-streaks-wrap {
+    margin-top: 0.25rem;
+}
+.gamification-completed-tasks {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    max-height: 40vh;
+    overflow-y: auto;
+}
+.gamification-completed-streaks .gamification-completed-task-row {
+    display: grid;
+    grid-template-columns: minmax(10rem, 1fr) minmax(5rem, auto);
+    gap: 0.75rem;
+    align-items: start;
+}
+.gamification-completed-streaks .gamification-completed-task-row > .gamification-completed-task-link {
+    min-width: 0;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    white-space: normal;
+}
+.gamification-completed-tasks-list .gamification-completed-task-row {
+    display: grid;
+    grid-template-columns: minmax(10rem, 1fr) minmax(8rem, auto) minmax(6rem, auto) minmax(10rem, 12rem);
+    gap: 0.75rem;
+    align-items: start;
+}
+.gamification-completed-tasks-list .gamification-completed-task-row > .gamification-completed-task-link {
+    min-width: 0;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    white-space: normal;
+}
+.gamification-completed-empty {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    margin: 0;
+}
+.gamification-completed-month-wrap {
+    margin-top: 1rem;
+    margin-bottom: 0.5rem;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 0.5rem;
+}
+.gamification-month-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+.gamification-month-label {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+.gamification-stepper-group {
+    display: inline-flex;
+    align-items: stretch;
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary-alt);
+    overflow: hidden;
+}
+.gamification-stepper-btn {
+    width: 2rem;
+    padding: 0;
+    font-size: 1.1rem;
+    line-height: 1;
+    border: none;
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.gamification-stepper-btn:hover {
+    background: var(--background-modifier-border-hover);
+}
+.gamification-stepper-btn:active {
+    background: var(--interactive-accent);
+    color: var(--background-primary);
+}
+.gamification-stepper-value {
+    min-width: 2.75rem;
+    padding: 0.35rem 0.5rem;
+    font-size: 0.9rem;
+    text-align: center;
+    color: var(--text-normal);
+}
+.gamification-stepper-month {
+    min-width: 3rem;
+    width: max-content;
+}
+.gamification-stepper-current-btn {
+    margin-left: 0.5rem;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.8rem;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary-alt);
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.gamification-stepper-current-btn:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+.gamification-completed-task-left {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: break-word;
+    word-break: break-word;
+}
+.gamification-completed-back-in-work {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+.gamification-completed-task-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+.gamification-completed-task-row:last-child {
+    border-bottom: none;
+}
+.gamification-completed-task-row > .gamification-completed-task-link {
+    flex: 1;
+    min-width: 0;
+}
+.gamification-completed-task-link {
+    color: var(--text-accent);
+    text-decoration: none;
+    font-size: 0.95rem;
+    overflow-wrap: break-word;
+    word-break: break-word;
+}
+.gamification-completed-task-link:hover {
+    text-decoration: underline;
+}
+.gamification-completed-task-days {
+    font-size: 0.9rem;
+    color: var(--text-normal);
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-width: 5rem;
+}
+.gamification-completed-task-date {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-width: 11rem;
+}
+.gamification-completed-task-done {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-width: 6rem;
+}
+.gamification-completed-task-reward {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    min-width: 10rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    overflow-wrap: break-word;
+    word-break: break-word;
+}
+.gamification-completed-reward-text {
+    color: var(--text-normal);
+}
+.gamification-completed-task-header {
+    font-weight: 600;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    padding-bottom: 0.25rem;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+.gamification-completed-task-header .gamification-completed-task-link {
+    flex: 1;
+    min-width: 0;
+}
+.gamification-completed-task-header .gamification-completed-task-date {
+    min-width: 11rem;
+}
+.gamification-completed-task-header .gamification-completed-task-done {
+    min-width: 6rem;
+}
+.gamification-completed-task-header .gamification-completed-task-days,
+.gamification-completed-task-header .gamification-completed-task-reward {
+    min-width: 5rem;
+}
+.gamification-completed-task-header .gamification-completed-task-reward {
+    min-width: 10rem;
+}
+.gamification-completed-task-header .gamification-completed-task-link,
+.gamification-completed-task-header .gamification-completed-task-date,
+.gamification-completed-task-header .gamification-completed-task-done,
+.gamification-completed-task-header .gamification-completed-task-days,
+.gamification-completed-task-header .gamification-completed-task-reward {
+    color: var(--text-muted);
+    cursor: default;
+}
+.gamification-completed-tasks-list .gamification-completed-task-header .gamification-completed-task-link {
+    flex: none;
+}
+.gamification-completed-tasks-body .gamification-completed-task-row {
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+.gamification-completed-footer {
+    margin-top: 0.25rem;
+    display: flex;
+    justify-content: flex-end;
+}
+.gamification-shop {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--background-modifier-border);
+}
+/* Заголовок магазина — как подсекция «СЕГОДНЯ» у напоминаний, не как «Прогресс» */
+.gamification-shop .opa-section-header {
+    margin-bottom: 8px;
+    cursor: pointer;
+}
+.gamification-shop .opa-collapse-indicator {
+    position: relative;
+    left: 0;
+    margin-right: 8px;
+    opacity: 0.7;
+    color: var(--text-muted);
+}
+.gamification-shop .opa-collapse-indicator-text .opa-collapse-arrow-char {
+    font-size: 0.8em;
+    display: inline-block;
+    width: 12px;
+    text-align: center;
+}
+.gamification-shop .opa-collapse-indicator svg {
+    width: 12px;
+    height: 12px;
+}
+.gamification-shop .opa-section-title {
+    font-size: 0.95em;
+    font-weight: 600;
+    color: var(--text-normal);
+    text-transform: uppercase;
+}
+.gamification-shop-manage-btn {
+    flex-shrink: 0;
+}
+.gamification-shop-table {
+    margin-top: 0.5rem;
+    width: max-content;
+    max-width: 100%;
+    border-collapse: collapse;
+    font-size: 0.95em;
+    table-layout: auto;
+}
+.gamification-shop-th-name,
+.gamification-shop-table td.gamification-shop-name {
+    white-space: normal;
+}
+.gamification-shop-table th,
+.gamification-shop-table td {
+    padding: 0.35rem 0.5rem;
+    text-align: left;
+    border-bottom: 1px solid var(--background-modifier-border);
+    vertical-align: middle;
+}
+.gamification-shop-table thead th {
+    font-weight: 600;
+    color: var(--text-muted);
+}
+.gamification-shop-th-cost,
+.gamification-shop-cost {
+    white-space: nowrap;
+    min-width: 5.5rem;
+    text-align: right;
+    color: var(--text-normal);
+}
+.gamification-shop-th-action,
+.gamification-shop-action {
+    min-width: 5rem;
+    width: 1%;
+    white-space: nowrap;
+    text-align: right;
+}
+.gamification-shop-item .gamification-shop-name {
+    min-width: 0;
+    line-height: 1.4;
+    color: var(--text-normal);
+    word-wrap: break-word;
+}
+.gamification-shop-btn {
+    flex-shrink: 0;
+}
+.view-modal.gamification-shop-modal {
+    min-width: 320px;
+    width: min(680px, 95vw);
+    max-width: 95vw;
+}
+.gamification-shop-modal .gamification-shop-modal-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    max-height: 50vh;
+    overflow-y: auto;
+}
+.gamification-shop-modal-row {
+    display: grid;
+    grid-template-columns: 1fr 4rem 1fr auto;
+    gap: 0.5rem;
+    align-items: start;
+}
+.gamification-shop-modal-row .gamification-shop-modal-name,
+.gamification-shop-modal-row .gamification-shop-modal-desc {
+    min-width: 0;
+    resize: none;
+    overflow-wrap: break-word;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    box-sizing: border-box;
+    min-height: 2em;
+    font-family: inherit;
+    padding: 6px 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background: var(--background-primary-alt);
+    color: var(--text-normal);
+    overflow-y: hidden;
+}
+.gamification-shop-modal-row input[type="number"] {
+    width: 100%;
+    box-sizing: border-box;
+}
+.gamification-shop-modal-del {
+    padding: 0.2rem 0.4rem;
+    cursor: pointer;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+    color: var(--text-muted);
+}
+.gamification-shop-modal-add {
+    margin-bottom: 0.75rem;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.9rem;
+    cursor: pointer;
+    border-radius: 4px;
+    border: 1px dashed var(--background-modifier-border);
+    background: var(--background-secondary);
+}
+.gamification-shop-modal-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+}
+.gamification-purchased-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+.gamification-purchased-empty {
+    color: var(--text-muted);
+    font-size: 0.95em;
+}
+.gamification-purchased-item {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+    font-size: 0.95em;
+}
+.gamification-purchased-item:last-child {
+    border-bottom: none;
+}
+.gamification-purchased-date {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    font-size: 0.9em;
+    min-width: 8rem;
+}
+.gamification-purchased-what {
+    flex: 1;
+    min-width: 0;
+    color: var(--text-normal);
+}
+.gamification-purchased-cost {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    font-size: 0.9em;
+}
+.gamification-purchased-footer {
+    margin-top: 1rem;
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+.gamification-purchased-del {
+    flex-shrink: 0;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.8em;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.gamification-purchased-del:hover {
+    color: var(--text-normal);
+    background: var(--interactive-hover);
+}
+.gamification-levelup-modal .view-modal-content {
+    text-align: center;
+    padding: 0.5rem 0;
+}
+.gamification-levelup-modal h3 {
+    color: var(--interactive-accent);
+}

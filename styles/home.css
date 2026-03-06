@@ -1,0 +1,501 @@
+/* Общие стили Home/Inbox/Reminders/Trash: формы, кнопки, модалки, корзина, инбокс, напоминания. */
+
+.view-add-form {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 5px;
+    margin-bottom: 20px;
+    width: 100%;
+}
+
+/* Кнопки и инпуты — в shared-ui.css (.ui-btn-*, .ui-input, .view-btn, .view-input и т.д.) */
+
+.view-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.6);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(2px);
+}
+
+.view-modal {
+    background-color: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 20px;
+    width: 400px;
+    max-width: 90vw;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+}
+
+.view-modal h3 {
+    margin-top: 0;
+    margin-bottom: 15px;
+    text-align: center;
+    color: var(--text-normal);
+}
+
+.view-modal-content {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+}
+
+/* Модалка настройки напоминания: поуже, без крестика, Enter = Сохранить */
+.opa-reminder-settings-modal {
+    width: 360px;
+    max-width: 90vw;
+}
+
+.opa-reminder-settings-modal .modal-content {
+    max-width: 100%;
+    padding-top: 0;
+}
+
+.opa-reminder-settings-modal .modal-close-button {
+    display: none;
+}
+
+.reminder-modal-cancel {
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.reminder-modal-cancel:hover {
+    background: var(--background-modifier-hover);
+}
+
+/* Поле редактирования напоминания — шире */
+.rv-content.is-editing .rv-edit-input,
+.rv-content.is-editing .view-input {
+    min-width: 380px;
+    max-width: 100%;
+}
+
+/* Модалка уведомления о напоминании: шире под длинный текст, кнопки по центру */
+.opa-reminder-notification-modal {
+    width: 400px;
+    max-width: 92vw;
+}
+
+.opa-reminder-notification-modal .modal-content {
+    max-width: 100%;
+}
+
+/* В модалке просроченного напоминания не показывать кнопку закрыть */
+.opa-reminder-notification-modal .modal-close-button {
+    display: none;
+}
+
+/* Окно выбора даты переноса: аккуратная верстка */
+.opa-reminder-picker-modal {
+    width: 320px !important;
+    max-width: 92vw;
+}
+
+.opa-reminder-picker-modal .modal-close-button {
+    display: none;
+}
+
+.opa-reminder-picker-modal .modal-content {
+    display: flex;
+    flex-direction: column;
+    padding-bottom: 5px;
+}
+
+.opa-reminder-picker-modal .opa-reminder-picker-input {
+    width: 100%;
+    max-width: none;
+    box-sizing: border-box;
+    margin: 0;
+}
+
+.opa-reminder-picker-modal .opa-reminder-picker-actions {
+    display: flex;
+    justify-content: flex-end;
+    width: 100%;
+    margin: 0;
+}
+
+.opa-reminder-picker-modal .opa-reminder-picker-save {
+    margin: 0;
+}
+
+.opa-reminder-notif-btns {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+}
+
+.opa-reminder-notif-btn {
+    width: 100%;
+    max-width: 200px;
+    box-sizing: border-box;
+    padding: 8px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    cursor: pointer;
+    font-size: 0.95em;
+    text-align: left;
+}
+
+.opa-reminder-notif-btn:hover {
+    background: var(--background-modifier-hover);
+}
+
+.opa-reminder-notif-btn-primary {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-color: var(--interactive-accent);
+}
+
+.opa-reminder-notif-btn-primary:hover {
+    opacity: 0.9;
+}
+
+.trash-toolbar {
+    display: flex;
+    justify-content: flex-start;
+    margin-bottom: 10px;
+}
+
+.trash-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+    color: var(--text-muted);
+    font-size: 0.95em;
+}
+
+.trash-item-text {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.trash-item-badge {
+    flex-shrink: 0;
+    font-size: 0.75em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 500;
+}
+
+.trash-item-badge-completed {
+    color: var(--text-muted);
+    background: var(--background-modifier-border);
+}
+
+.trash-empty {
+    font-style: italic;
+    color: var(--text-muted);
+    margin-top: 10px;
+}
+
+.inbox-container {
+    margin-top: 10px;
+}
+
+.inbox-line {
+    border-bottom: 1px solid var(--background-modifier-border);
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 8px 5px;
+    min-height: 40px;
+}
+
+.inbox-text {
+    margin-right: 15px;
+    color: var(--text-normal);
+    word-break: break-word;
+    flex: 0 1 auto;
+}
+
+.inbox-actions {
+    display: flex;
+    gap: 5px;
+    visibility: hidden;
+    opacity: 0;
+    transition: opacity 0.2s;
+    flex-shrink: 0;
+}
+
+.inbox-line:hover .inbox-actions {
+    visibility: visible;
+    opacity: 1;
+}
+
+.inbox-archive {
+    margin-top: 1em;
+    padding-top: 1em;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.reminders-wrapper {
+    width: 100%;
+}
+
+.rv-empty {
+    padding: 10px 0;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.rv-section {
+    margin-bottom: 20px;
+}
+
+.rv-section-header {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+    margin-bottom: 8px;
+    border-bottom: none;
+}
+
+.rv-section-arrow {
+    margin-right: 8px;
+    font-size: 0.8em;
+    width: 12px;
+    display: inline-block;
+    text-align: center;
+    opacity: 0.7;
+    color: var(--text-muted);
+}
+
+.rv-section-title-text {
+    font-size: 0.95em;
+    font-weight: 600;
+    color: var(--text-normal);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.rv-section h3 {
+    font-size: inherit;
+    margin: 0;
+    border-bottom: none;
+    font-weight: inherit;
+}
+
+.rv-count {
+    margin-left: 8px;
+    background: var(--background-modifier-border);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.8em;
+    color: var(--text-faint);
+}
+
+.rv-item {
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+    min-height: 42px;
+}
+
+.rv-item:last-child {
+    border-bottom: none;
+}
+
+.rv-item-content-wrap {
+    display: flex;
+    align-items: center;
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.rv-checkbox-label {
+    display: flex;
+    align-items: center;
+    margin-right: 12px;
+    cursor: pointer !important;
+}
+
+.rv-checkbox-label input[type="checkbox"].rv-checkbox {
+    cursor: pointer !important;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--interactive-accent);
+}
+
+.rv-content {
+    flex: 0 1 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding-right: 15px;
+    min-width: 0;
+}
+
+.rv-content.is-editing {
+    max-width: 100% !important;
+    width: 100% !important;
+    padding-right: 0;
+}
+
+.rv-text {
+    font-size: 0.95em;
+    color: var(--text-normal);
+    line-height: 1.4;
+    word-break: break-word;
+}
+
+.rv-file-link {
+    font-size: 0.8em;
+    color: var(--text-faint) !important;
+    text-decoration: none !important;
+    margin-top: 2px;
+    cursor: pointer;
+    border-bottom: 1px solid transparent;
+    transition: all 0.2s;
+    width: fit-content;
+}
+
+.rv-file-link:hover {
+    color: var(--interactive-accent) !important;
+    border-bottom-color: var(--interactive-accent);
+}
+
+.rv-actions {
+    visibility: hidden;
+    opacity: 0;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    gap: 5px;
+    margin-right: 15px;
+    transition: opacity 0.2s;
+}
+
+.rv-item:hover .rv-actions {
+    visibility: visible;
+    opacity: 1;
+}
+
+.rv-time {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    min-width: 90px;
+    text-align: left;
+    flex-shrink: 0;
+    margin-left: 12px;
+    margin-right: 12px;
+}
+
+.rv-badge {
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.8em;
+    font-weight: 500;
+}
+
+.rv-rel-time {
+    font-size: 0.75em;
+    color: var(--text-faint);
+    margin-top: 2px;
+}
+
+/* Цвет бейджа по типу элемента (просрочено = красный) */
+.rv-item-overdue .rv-badge {
+    color: var(--text-error);
+    background: rgba(var(--color-red-rgb), 0.2);
+}
+
+.rv-item-today .rv-badge {
+    color: var(--text-success);
+    background: rgba(var(--color-green-rgb), 0.15);
+}
+
+.rv-item-tomorrow .rv-badge {
+    color: var(--text-accent);
+    background: rgba(var(--color-blue-rgb), 0.15);
+}
+
+.rv-item-upcoming .rv-badge {
+    color: var(--text-muted);
+    background: var(--background-secondary);
+}
+
+/* Вложенные элементы в группах архива — отступ для визуального разделения */
+.rv-archive-sublist {
+    padding-left: 1.5em;
+    margin-left: 0.25em;
+    border-left: 2px solid var(--background-modifier-border);
+}
+
+/* ---- Сворачиваемые заголовки модулей (Доска задач, Напоминания, Блокнот, Корзина и т.д.) ---- */
+.opa-section {
+    margin-bottom: 24px;
+}
+
+.opa-section-header {
+    position: relative;
+    display: flex;
+    align-items: center;
+    cursor: default;
+    margin-bottom: 12px;
+    user-select: none;
+}
+
+.opa-section-title {
+    margin: 0;
+    font-size: var(--h4-size);
+    font-weight: var(--h4-weight, 600);
+    color: var(--h4-color, var(--text-normal));
+    line-height: 1.2;
+}
+
+.opa-collapse-indicator {
+    position: absolute;
+    left: -24px;
+    width: 24px;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    color: var(--text-faint);
+    transition: opacity 0.15s ease;
+    cursor: default;
+}
+
+.opa-section-header:hover .opa-collapse-indicator {
+    opacity: 1;
+}
+
+.is-mobile .opa-collapse-indicator {
+    opacity: 0.5;
+}
+
+.opa-collapse-indicator svg {
+    width: 14px;
+    height: 14px;
+    transition: transform 0.2s ease;
+}
+
+.opa-collapse-indicator.is-collapsed svg {
+    transform: rotate(-90deg);
+}

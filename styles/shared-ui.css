@@ -1,0 +1,571 @@
+/* Дизайн-токены UI: кнопки и инпуты. Подключать первым среди сниппетов view. */
+
+/* ---- Базовые размеры и общие свойства ---- */
+.ui-btn-primary,
+.ui-btn-secondary,
+.gamification-shop-btn,
+.gamification-shop-manage-btn,
+.view-btn,
+.trash-clear-button,
+.inbox-action-btn,
+.ui-input,
+.view-input,
+.ui-input-date,
+.view-date-input,
+.ui-select,
+.pv-status-select {
+    box-sizing: border-box !important;
+    font-family: var(--font-ui);
+    outline: none;
+    transition: all 0.2s ease;
+}
+
+/* ---- Кнопка основное действие (акцент) ---- */
+.ui-btn-primary,
+.gamification-shop-btn {
+    height: 32px !important;
+    padding: 0 16px;
+    font-size: 0.9em;
+    line-height: 1;
+    vertical-align: middle;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    cursor: pointer;
+    font-weight: 500;
+    flex-shrink: 0;
+}
+.ui-btn-primary:hover,
+.gamification-shop-btn:hover {
+    background-color: var(--interactive-hover);
+    border-color: var(--background-modifier-border-hover);
+}
+
+/* ---- Кнопка вторичное действие ---- */
+.ui-btn-secondary,
+.gamification-shop-manage-btn,
+.view-btn,
+.trash-clear-button {
+    height: 32px !important;
+    padding: 0 16px;
+    font-size: 0.9em;
+    line-height: 1;
+    vertical-align: middle;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--interactive-normal);
+    color: var(--text-normal);
+    cursor: pointer;
+    font-weight: 500;
+}
+.ui-btn-secondary:hover,
+.gamification-shop-manage-btn:hover,
+.view-btn:hover,
+.trash-clear-button:hover {
+    background-color: var(--interactive-hover);
+    border-color: var(--background-modifier-border-hover);
+}
+
+/* ---- Кнопка компактная (действия в строке) ---- */
+.inbox-action-btn {
+    height: 32px !important;
+    padding: 0 12px;
+    font-size: 0.9em;
+    line-height: 1;
+    vertical-align: middle;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--interactive-normal);
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.inbox-action-btn:hover {
+    background-color: var(--interactive-hover);
+    color: var(--text-normal);
+    border-color: var(--background-modifier-border-hover);
+}
+
+/* ---- Текстовое поле и селект (обычный) ---- */
+.ui-input,
+.view-input {
+    height: 32px !important;
+    width: 350px;
+    padding: 0 10px;
+    font-size: 0.9em;
+    line-height: 1;
+    vertical-align: middle;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--background-primary-alt);
+    color: var(--text-normal);
+}
+.ui-input:focus,
+.view-input:focus {
+    border-color: var(--interactive-accent);
+}
+
+/* ---- Поле даты/времени ---- */
+.ui-input-date,
+.view-date-input {
+    height: 32px !important;
+    padding: 0 8px;
+    font-size: 0.9em;
+    line-height: 1;
+    vertical-align: middle;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--background-primary-alt);
+    color: var(--text-muted);
+    cursor: pointer;
+    width: 140px;
+}
+.ui-input-date:focus,
+.view-date-input:focus {
+    border-color: var(--interactive-accent);
+    color: var(--text-normal);
+}
+.ui-input-date::-webkit-calendar-picker-indicator,
+.view-date-input::-webkit-calendar-picker-indicator {
+    filter: invert(0.6);
+    cursor: pointer;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+}
+.ui-input-date::-webkit-calendar-picker-indicator:hover,
+.view-date-input::-webkit-calendar-picker-indicator:hover {
+    filter: invert(0.9);
+}
+
+/* ---- Селект (pill, статусы в таблицах) ---- */
+.ui-select,
+.pv-status-select {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: auto;
+    min-height: 28px;
+    padding: 5px 12px;
+    font-size: 0.85em;
+    line-height: 1;
+    border-radius: 20px;
+    border: 1px solid transparent;
+    color-scheme: dark;
+    text-align: center;
+    text-align-last: center;
+    cursor: pointer;
+    font-weight: 500;
+}
+/* Базовый фон по умолчанию */
+.ui-select,
+.pv-status-select {
+    background-color: var(--background-secondary);
+    color: var(--text-normal);
+    border-color: var(--background-modifier-border);
+}
+.ui-select:hover,
+.pv-status-select:hover {
+    filter: brightness(1.08);
+    border-color: inherit;
+}
+/* Цвета по статусу (pill) */
+.pv-status-select[data-status="в работе"] {
+    background-color: rgba(88, 166, 255, 0.22);
+    color: #7eb8ff;
+    border-color: rgba(88, 166, 255, 0.35);
+}
+.pv-status-select[data-status="тестирование"] {
+    background-color: rgba(255, 180, 80, 0.2);
+    color: #ffb84d;
+    border-color: rgba(255, 180, 80, 0.4);
+}
+.pv-status-select[data-status="повторяющиеся"] {
+    background-color: rgba(180, 140, 255, 0.2);
+    color: #c4a8ff;
+    border-color: rgba(180, 140, 255, 0.35);
+}
+.pv-status-select[data-status="backlog"] {
+    background-color: rgba(120, 120, 130, 0.25);
+    color: var(--text-muted);
+    border-color: rgba(120, 120, 130, 0.4);
+}
+.pv-status-select[data-status="готово"] {
+    background-color: rgba(80, 200, 140, 0.22);
+    color: #6ee7a6;
+    border-color: rgba(80, 200, 140, 0.4);
+}
+.pv-status-select[data-status="отменено"] {
+    background-color: rgba(100, 100, 110, 0.2);
+    color: var(--text-faint);
+    border-color: rgba(100, 100, 110, 0.3);
+}
+.ui-select option,
+.pv-status-select option {
+    background-color: var(--background-primary);
+    color: var(--text-normal);
+}
+
+/* Модалка «Новая заметка»: компактно, без лишнего места по центру */
+.opa-new-note-modal {
+    width: 380px !important;
+    max-width: 95vw;
+    box-sizing: border-box;
+}
+.opa-new-note-modal .modal-content {
+    width: 100%;
+    padding: 12px 0;
+    min-height: 0;
+    box-sizing: border-box;
+}
+.opa-new-note-modal .setting-item {
+    padding: 6px 0;
+}
+.opa-new-note-modal .opa-new-note-label {
+    margin: 0 0 10px 0;
+    font-weight: 600;
+    color: var(--text-normal);
+}
+.opa-new-note-modal .opa-new-note-label-secondary {
+    margin: 16px 0 8px 0;
+    font-weight: 500;
+    font-size: 0.95em;
+    color: var(--text-muted);
+}
+.opa-new-note-modal .opa-new-note-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.opa-new-note-modal .opa-new-note-buttons button {
+    justify-content: center;
+}
+
+/* Модалка «Создать задачу или проект»: без заголовка и крестика, размер под кнопки */
+.opa-task-or-project-modal .modal-close-button {
+    display: none;
+}
+.opa-task-or-project-modal .modal-title {
+    display: none;
+}
+.opa-task-or-project-modal {
+    width: fit-content !important;
+    min-width: 120px;
+}
+.opa-task-or-project-modal .modal-content {
+    padding: 10px 14px;
+}
+.opa-task-or-project-modal .opa-new-note-buttons {
+    align-items: flex-start;
+}
+.opa-task-or-project-modal .opa-new-note-buttons button {
+    width: auto;
+    min-width: 100px;
+}
+
+/* Модалка «Создать задачу»: фиксированная ширина, прокрутка, поле шаблона не обрезается */
+.opa-create-task-modal {
+    width: 520px !important;
+    max-width: 92vw;
+    max-height: 88vh;
+    box-sizing: border-box;
+}
+.opa-create-task-modal .modal-content {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: calc(88vh - 50px);
+    overflow-y: auto;
+    overflow-x: visible;
+    box-sizing: border-box;
+    padding-right: 10px;
+    padding-bottom: 14px;
+}
+.opa-create-task-modal .opa-create-task-form {
+    display: block;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box;
+    padding-right: 2px;
+}
+.opa-create-task-modal [class*="modal"] {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box;
+}
+/* Строка поля: метка слева, контрол справа — одна высота */
+.opa-create-task-modal .setting-item {
+    align-items: center;
+    width: 100% !important;
+    max-width: 100% !important;
+    display: flex !important;
+    gap: 12px;
+    padding: 6px 0;
+}
+.opa-create-task-modal .setting-item-info {
+    flex: 0 0 auto;
+    min-width: 100px;
+    max-width: 120px;
+}
+/* Правая колонка: занимает оставшееся место, одна ширина у всех полей */
+.opa-create-task-modal .setting-item-control {
+    flex: 1 1 0% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    box-sizing: border-box;
+    display: flex !important;
+    align-items: center;
+}
+.opa-create-task-modal .setting-item-control .dropdown,
+.opa-create-task-modal .setting-item-control select {
+    flex: 0 0 auto;
+    width: 200px !important;
+    max-width: calc(100% - 4px) !important;
+    box-sizing: border-box;
+}
+.opa-create-task-modal .setting-item-control input[type="text"],
+.opa-create-task-modal .setting-item-control textarea {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    box-sizing: border-box;
+}
+/* Многострочные поля (Комментарий и т.п.): выравнивать по верху строки */
+.opa-create-task-modal .setting-item-control textarea {
+    align-self: stretch;
+    min-height: 2.5em;
+}
+/* Строка кнопок Отмена и Создать — нормальный размер, снизу запас под окантовку */
+.opa-create-task-modal .opa-create-task-buttons {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 12px;
+    margin-bottom: 4px;
+    padding-top: 8px;
+}
+.opa-create-task-modal .opa-create-task-buttons button {
+    width: auto;
+    min-width: 80px;
+}
+/* Поле комментария при смене статуса: фиксированный размер, без ресайза */
+.opa-create-task-modal .opa-status-comment-input {
+    resize: none;
+    min-height: 140px;
+    width: 100%;
+    box-sizing: border-box;
+}
+/* Разделитель и блок дополнительных полей — суммарный отступ = как между строками (12px от низа Группа до верха Комментарий) */
+.opa-create-task-modal .opa-create-task-custom-section {
+    margin-top: 0;
+    padding-top: 0;
+}
+/* У шаблона «Обычная» нет доп. полей — скрываем черту и блок */
+.opa-create-task-modal .opa-create-task-custom-section-empty {
+    display: none !important;
+}
+.opa-create-task-modal .opa-create-task-custom-divider {
+    border: none;
+    border-top: 1px solid var(--background-modifier-border);
+    margin: 0;
+}
+/* Первая строка кастомного блока: верхний отступ 5px (итого с линией и padding Группа = 12px) */
+.opa-create-task-modal .opa-create-task-custom-fields .setting-item:first-child {
+    padding-top: 5px;
+}
+.opa-create-task-modal .opa-create-task-custom-fields .setting-item {
+    margin-top: 0;
+}
+/* Многострочное поле в кастомном блоке: метка по верху */
+.opa-create-task-modal .opa-create-task-custom-fields .setting-item:has(textarea) {
+    align-items: flex-start;
+}
+.opa-create-task-modal .opa-create-task-custom-fields .setting-item:has(textarea) .setting-item-control {
+    align-items: stretch;
+}
+/* Скрыть крестик закрытия модалки */
+.opa-create-task-modal .modal-close-button {
+    display: none !important;
+}
+.opa-create-task-modal .opa-multi-select {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    min-width: 100%;
+    width: 100%;
+    padding: 6px 0;
+    box-sizing: border-box;
+}
+.opa-create-task-modal .opa-multi-select-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    font-size: 0.9em;
+    white-space: nowrap;
+}
+.opa-create-task-modal .opa-multi-select-label input {
+    min-width: auto;
+    width: auto;
+    cursor: pointer;
+}
+
+/* Строка «Выбрать…» в модалке «Создать задачу» */
+.opa-create-task-modal .opa-multi-select-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+}
+.opa-create-task-modal .opa-multi-select-summary {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-muted);
+    font-size: 0.9em;
+}
+
+/* Окна выбора (Проект, Контекст, Окружение): ширина по контенту, без пустой полосы справа */
+.opa-multi-select-popover {
+    width: fit-content !important;
+    min-width: 0;
+}
+.opa-multi-select-popover .modal-content {
+    width: 300px;
+    min-width: 260px;
+    max-width: 90vw;
+    border-left: none;
+    padding-left: 12px;
+    box-sizing: border-box;
+}
+.opa-multi-select-popover .opa-multi-select-filter {
+    margin-bottom: 8px;
+}
+.opa-multi-select-popover .opa-multi-select-filter input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+}
+.opa-multi-select-popover .opa-multi-select-label.opa-filter-hidden {
+    display: none !important;
+}
+.opa-multi-select-popover .opa-multi-select {
+    display: flex;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: 4px;
+    max-height: 280px;
+    overflow-y: auto;
+    margin-bottom: 12px;
+    width: 100%;
+    box-sizing: border-box;
+}
+.opa-multi-select-popover .opa-multi-select-label {
+    display: flex;
+    align-items: flex-start;
+    gap: 0;
+    cursor: pointer;
+    font-size: 0.9em;
+    padding: 4px 8px;
+    white-space: normal;
+    word-break: break-word;
+    line-height: 1.35;
+    border-radius: 4px;
+    margin: 0;
+    border: none;
+    box-sizing: border-box;
+}
+.opa-multi-select-popover .opa-multi-select-label.opa-multi-select-label-checked {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border: none;
+}
+.opa-multi-select-popover .opa-multi-select-label input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    margin: 0;
+    padding: 0;
+    border: none;
+    outline: none;
+}
+.opa-multi-select-popover .opa-multi-select-label {
+    position: relative;
+    border-left: none;
+    padding-left: 8px;
+}
+.opa-multi-select-popover .opa-multi-select-label:hover,
+.opa-multi-select-popover .opa-multi-select-label:focus-within {
+    border-left: 3px solid var(--interactive-accent);
+    padding-left: 5px;
+}
+.opa-multi-select-popover .opa-multi-select-label.opa-multi-select-label-checked,
+.opa-multi-select-popover .opa-multi-select-label.opa-multi-select-label-checked:hover,
+.opa-multi-select-popover .opa-multi-select-label.opa-multi-select-label-checked:focus-within {
+    border-left: none;
+    padding-left: 8px;
+}
+.opa-multi-select-popover .opa-multi-select {
+    border: none;
+    list-style: none;
+    padding-left: 0;
+}
+.opa-multi-select-popover .opa-multi-select-buttons {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+/* Модалка выбора даты ежедневной заметки: узкая, контент справа, без лишнего места слева */
+.opa-daily-heading-date-modal {
+    width: 420px !important;
+    max-width: 95vw;
+    box-sizing: border-box;
+}
+.opa-daily-heading-date-modal .modal-title:empty {
+    display: none;
+}
+.opa-daily-heading-date-modal .modal-close-button {
+    display: none !important;
+}
+.opa-daily-heading-date-modal .setting-item-info {
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.opa-daily-heading-date-modal .modal-content {
+    max-width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+}
+.opa-daily-heading-date-modal .opa-daily-heading-date-steppers {
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    width: fit-content;
+}
+.opa-daily-heading-date-modal .opa-daily-heading-date-steppers-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: flex-end;
+}
+.opa-daily-heading-date-modal .opa-daily-heading-current-day-row {
+    margin-top: 0.25rem;
+    display: flex;
+    justify-content: flex-end;
+}
+.opa-daily-heading-date-modal .opa-daily-heading-date-buttons {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 12px;
+    width: fit-content;
+}
+
+/* Узкое поле «За сколько дней напоминать» в настройках. */
+.opa-settings-lead-days input {
+    max-width: 4em;
+}

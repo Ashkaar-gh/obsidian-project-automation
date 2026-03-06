@@ -1,0 +1,260 @@
+/* Таблицы Home/Project: загрузка, TOC, таблица, группы, строки задач, селект статуса, скролл и подсветка. */
+
+.pv-loading,
+.pv-empty-message {
+    text-align: center;
+    color: var(--text-faint);
+    padding: 20px;
+}
+
+.pv-toc-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 15px;
+}
+
+.pv-toc-btn {
+    padding: 4px 12px;
+    border-radius: 14px;
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    font-size: 0.85em;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.2s;
+    user-select: none;
+}
+
+.pv-toc-btn:hover {
+    background-color: var(--interactive-hover);
+    color: var(--text-normal);
+    border-color: var(--interactive-accent);
+}
+
+.pv-toc-count {
+    opacity: 0.6;
+    margin-left: 4px;
+    font-size: 0.9em;
+}
+
+/* Без разметки таблицы: только горизонтальные линии, без вертикальных границ (как в scripts_old). */
+table.pv-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    border-spacing: 0;
+    border: none !important;
+}
+
+.pv-table thead th {
+    font-size: 0.7em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-align: left;
+    padding: 10px;
+    vertical-align: bottom;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border: none !important;
+    border-bottom: 1px solid var(--background-modifier-border);
+    background: transparent;
+}
+
+.pv-table td,
+.pv-table .pv-task-cell {
+    border: none !important;
+    border-bottom: none !important;
+}
+
+.pv-col-auto { width: auto; min-width: 100px; }
+.pv-col-shrink { width: 9%; min-width: 85px; }
+.pv-col-fixed-status { width: 185px; }
+.pv-col-fixed-date { width: 120px; text-align: right !important; }
+.pv-col-fixed-date-range { width: 240px; text-align: right !important; }
+
+/* Без дедлайна: 6 колонок (Задача, Контекст, Проект, Окружение, Статус, Срок). */
+.pv-table thead th:nth-child(1) { width: auto; min-width: 100px; }
+.pv-table thead th:nth-child(2) { width: 9%; min-width: 85px; }
+.pv-table thead th:nth-child(3) { width: 9%; min-width: 85px; }
+.pv-table thead th:nth-child(4) { width: 9%; min-width: 85px; }
+.pv-table thead th:nth-child(5) { width: 185px; }
+.pv-table thead th:nth-child(6) { width: 240px; text-align: right; }
+
+/* С дедлайном: 7 колонок, предпоследняя — Дедлайн, последняя — Срок. */
+.pv-table.pv-table-with-deadline thead th:nth-child(6) { width: 120px; text-align: right; }
+.pv-table.pv-table-with-deadline thead th:nth-child(7) { width: 240px; text-align: right; }
+
+/* Вид проекта без дедлайна: 5 колонок. */
+.pv-table-project-view thead th:nth-child(3) { width: 9%; min-width: 85px; }
+.pv-table-project-view thead th:nth-child(4) { width: 185px; }
+.pv-table-project-view thead th:nth-child(5) { width: 240px; text-align: right; }
+
+/* Вид проекта с дедлайном: 6 колонок. */
+.pv-table-project-view.pv-table-with-deadline thead th:nth-child(5) { width: 120px; text-align: right; }
+.pv-table-project-view.pv-table-with-deadline thead th:nth-child(6) { width: 240px; text-align: right; }
+
+
+.pv-table tr.pv-group-row > td.pv-group-cell {
+    background-color: var(--background-secondary-alt);
+    border: none !important;
+    border-top: 1px solid var(--background-modifier-border) !important;
+    border-bottom: 1px solid var(--background-modifier-border) !important;
+    line-height: 0 !important;
+    height: 1px !important;
+    vertical-align: middle;
+    cursor: pointer !important;
+}
+
+.pv-group-header-container {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px 8px !important;
+    line-height: 1.2 !important;
+    margin: 0 !important;
+    min-height: 0 !important;
+}
+
+.pv-group-title {
+    display: flex;
+    align-items: center;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+.pv-group-title-text {
+    font-weight: 700;
+    font-size: 0.95em;
+    color: var(--text-normal);
+    margin-left: 6px;
+    line-height: 1.2 !important;
+}
+
+.pv-collapse-arrow {
+    display: inline-block;
+    margin-right: 8px;
+    width: 16px;
+    height: 16px;
+    font-size: 0.8em;
+    opacity: 0.7;
+    cursor: pointer;
+    transition: transform 0.2s ease;
+}
+
+.pv-collapsed .pv-collapse-arrow {
+    transform: rotate(-90deg);
+}
+
+.pv-group-summary {
+    display: flex;
+    align-items: center;
+    margin: 0 !important;
+    padding: 0 !important;
+    font-size: 0.85em;
+    opacity: 0.8;
+    line-height: 1.2 !important;
+}
+
+.pv-summary-item {
+    margin-left: 10px;
+    display: flex;
+    align-items: center;
+}
+
+.pv-task-row {
+    border-bottom: 1px solid var(--background-modifier-border);
+    transition: background-color 0.1s ease;
+}
+
+.pv-task-row td {
+    border: none !important;
+}
+
+.pv-task-row:hover {
+    background-color: var(--background-modifier-hover) !important;
+}
+
+.pv-task-cell {
+    padding: 8px 10px;
+    vertical-align: top;
+    font-size: 0.9em;
+    line-height: 1.5;
+    color: var(--text-normal);
+    overflow-wrap: break-word;
+}
+
+.pv-link {
+    color: #78a2e1;
+    text-decoration: none;
+    font-weight: 500;
+    display: block;
+    transition: color 0.2s ease;
+}
+
+.pv-link:hover {
+    color: var(--interactive-accent-hover);
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.pv-task-row td:nth-child(6),
+.pv-task-row td:nth-child(7),
+.pv-task-row td.pv-col-fixed-date,
+.pv-task-row td.pv-col-fixed-date-range {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pv-table-project-view .pv-task-row td:nth-child(5),
+.pv-table-project-view .pv-task-row td:nth-child(6) {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Просроченный дедлайн (дата в прошлом и статус не «Готово») — красная дата. */
+.pv-task-row td.pv-deadline-overdue {
+    color: var(--text-error) !important;
+}
+
+.pv-indent {
+    padding-left: 15px;
+}
+
+/* Селект статуса — в shared-ui.css (.ui-select, .pv-status-select) */
+
+.view-scroll-blocker {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 9999;
+    background: transparent;
+    cursor: wait;
+}
+
+.view-highlight-anim {
+    animation: view-flash 1.5s ease-out forwards;
+    border-radius: 4px;
+}
+
+@keyframes view-flash {
+    0% { background-color: rgba(var(--interactive-accent-rgb), 0.3); }
+    100% { background-color: transparent; }
+}
+
+.pv-collapsed .pv-task-row {
+    display: none;
+}
