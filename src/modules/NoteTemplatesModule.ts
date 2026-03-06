@@ -1258,6 +1258,18 @@ export class NoteTemplatesModule {
     }
   }
 
+  private async ensureFolderExists(folderPath: string): Promise<void> {
+    const parts = folderPath.split("/");
+    let current = "";
+    for (const part of parts) {
+      if (!part) continue;
+      current += (current ? "/" : "") + part;
+      if (!this.ctx.app.vault.getAbstractFileByPath(current)) {
+        await this.ctx.app.vault.createFolder(current);
+      }
+    }
+  }
+
   private openCreateTaskOrProject(): void {
     const modal = new CreateTaskOrProjectModal(this.ctx, () => this.openCreateTask(), () => this.openCreateProject());
     modal.open();
@@ -1290,13 +1302,7 @@ export class NoteTemplatesModule {
       new Notice("Пример шаблона уже есть: " + path);
       return;
     }
-    let current = "";
-    for (const part of folder.split("/")) {
-      current += (current ? "/" : "") + part;
-      if (!this.ctx.app.vault.getAbstractFileByPath(current)) {
-        await this.ctx.app.vault.createFolder(current);
-      }
-    }
+    await this.ensureFolderExists(folder);
     await this.ctx.app.vault.create(path, DEFAULT_TASK_TEMPLATE_EXAMPLE);
     new Notice("Создан пример шаблона задачи: " + path);
   }
@@ -1495,13 +1501,8 @@ export class NoteTemplatesModule {
     const path = p.name.endsWith(".md") ? p.name : p.name + ".md";
     const parts = path.split("/");
     if (parts.length > 1) {
-      let current = "";
-      for (let i = 0; i < parts.length - 1; i++) {
-        current += (current ? "/" : "") + parts[i];
-        if (!this.ctx.app.vault.getAbstractFileByPath(current)) {
-          await this.ctx.app.vault.createFolder(current);
-        }
-      }
+      const folderPath = parts.slice(0, -1).join("/");
+      await this.ensureFolderExists(folderPath);
     }
 
     const file = await this.ctx.app.vault.create(path, content);
@@ -1542,6 +1543,7 @@ export class NoteTemplatesModule {
     if (existing && existing instanceof TFile) {
       file = existing;
     } else {
+      await this.ensureFolderExists(dailyFolder);
       const content = await this.getDailyNoteContentForDate(targetDate);
       file = await this.ctx.app.vault.create(path, content);
       new Notice(`Создана ежедневная заметка: ${targetDate}`);
@@ -1574,13 +1576,15 @@ export class NoteTemplatesModule {
 
   private async createDailyNote(): Promise<void> {
     const dateStr = formatDDMMYYYY(new Date());
-    const path = `${Paths.DAILY_FOLDER}/${dateStr}.md`;
+    const folder = Paths.DAILY_FOLDER.replace(/\/?$/, "");
+    const path = `${folder}/${dateStr}.md`;
     const existing = this.ctx.app.vault.getAbstractFileByPath(path);
     if (existing) {
       await this.ctx.app.workspace.getLeaf(true).openFile(existing);
       new Notice("Ежедневная заметка уже существует.");
       return;
     }
+    await this.ensureFolderExists(folder);
     const content = await this.getDailyNoteContentForDate(dateStr);
     const file = await this.ctx.app.vault.create(path, content);
     new Notice(`Создана ежедневная заметка: ${dateStr}`);
