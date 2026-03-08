@@ -174,9 +174,11 @@
     text-align: center;
     color: var(--text-normal);
 }
+/* Фиксированная ширина под самый длинный месяц (сентябрь — 9 букв), чтобы не прыгал layout */
 .gamification-stepper-month {
-    min-width: 3rem;
-    width: max-content;
+    min-width: 11ch;
+    width: 11ch;
+    box-sizing: content-box;
 }
 .gamification-stepper-current-btn {
     margin-left: 0.5rem;

@@ -121,7 +121,7 @@ export class TasksDashboardModule {
 
       let projects: string[];
       try {
-        projects = await this.ctx.plugin.getProjects();
+        projects = await this.ctx.plugin.getProjectsSortedByTaskCount();
       } catch {
         if (projectsListRenderVersion.get(container) !== version) return;
         container.empty();
@@ -210,6 +210,7 @@ export class TasksDashboardModule {
   /** Публичный вызов для отложенного рефреша. Обновляются все открытые блоки, в т.ч. на фоновых вкладках. */
   scheduleRefresh(): void {
     if (!this.ctx.plugin.settings.enableTasksDashboard || !this.ctx.plugin.settings.enablePluginRefresh) return;
+    if (!this.isAnyBlockVisible()) return;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;

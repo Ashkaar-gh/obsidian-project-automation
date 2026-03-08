@@ -140,7 +140,7 @@ export const UI_LABELS = {
     charts: "Статистика",
     allActivities: "Активности",
     allActivitiesTitle: "Выбор активностей на сегодня",
-    poolListTitle: "Список возможных активностей",
+    poolListTitle: "Добавить новую активность",
     addActivity: "Добавить",
     addActivityLong: "Добавить активность",
     addPlaceholder: "Название активности",

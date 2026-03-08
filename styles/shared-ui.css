@@ -519,9 +519,9 @@
     justify-content: flex-end;
 }
 
-/* Модалка выбора даты ежедневной заметки: узкая, контент справа, без лишнего места слева */
+/* Модалка выбора даты ежедневной заметки: контент справа, ширина под день+месяц+год и кнопки */
 .opa-daily-heading-date-modal {
-    width: 420px !important;
+    width: 460px !important;
     max-width: 95vw;
     box-sizing: border-box;
 }
@@ -568,4 +568,22 @@
 /* Узкое поле «За сколько дней напоминать» в настройках. */
 .opa-settings-lead-days input {
     max-width: 4em;
+}
+
+/* Секции в настройках геймификации: задачи и активности разделены. */
+.opa-settings-gamification-section {
+    margin-top: 1.25rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--background-modifier-border);
+}
+.opa-settings-gamification-section:first-child {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+}
+.opa-settings-section-title {
+    font-weight: 600;
+    font-size: 0.95em;
+    margin-bottom: 0.5rem;
+    color: var(--text-normal);
 }

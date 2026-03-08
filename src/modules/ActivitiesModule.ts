@@ -4,13 +4,20 @@
  */
 
 import type { ModuleContext } from "./types";
-import { readDataFile, writeDataFile, type ActivitiesData, type ActivityItem } from "../core/GamificationState";
+import {
+  readDataFile,
+  writeDataFile,
+  getRewardForDifficulty,
+  isActivityDifficulty,
+  ACTIVITY_DIFFICULTY_REWARDS_DEFAULT,
+  DIFFICULTY_DISPLAY_LABELS,
+  type ActivitiesData,
+  type ActivityItem,
+} from "../core/GamificationState";
 import { UI_LABELS } from "../ui/Labels";
 import { createCollapsibleSection } from "../ui/CollapsibleSection";
 import { Modal, Notice } from "obsidian";
 
-const ACTIVITIES_REWARD_XP = 2;
-const ACTIVITIES_REWARD_GOLD = 1;
 const STORAGE_KEY_ACTIVITIES = "opa-activities-view";
 
 function getTodayKey(): string {
@@ -49,9 +56,27 @@ function nextActivityId(items: ActivityItem[]): string {
   return `a_${max + 1}`;
 }
 
+/** Суммарное количество выполнений активности по всей истории (для сортировки по частоте). */
+function getTotalCount(history: ActivitiesData["history"], activityId: string): number {
+  const byDate = history[activityId] ?? {};
+  return Object.values(byDate).reduce((s, n) => s + n, 0);
+}
+
+/** Активности, отсортированные по убыванию частоты (самые частые сверху). */
+function getItemsSortedByFrequency(data: ActivitiesData): ActivityItem[] {
+  return [...data.items].sort(
+    (a, b) => getTotalCount(data.history, b.id) - getTotalCount(data.history, a.id)
+  );
+}
+
+/** Интервал проверки смены дня (мс). При наступлении 00:00 вид перерисуется без перезапуска. */
+const DAY_CHECK_INTERVAL_MS = 60 * 1000;
+
 export class ActivitiesModule {
   private ctx: ModuleContext;
   private blocks = new Set<{ el: HTMLElement; refresh: () => void }>();
+  private lastTodayKey: string = getTodayKey();
+  private dayCheckInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(ctx: ModuleContext) {
     this.ctx = ctx;
@@ -59,6 +84,8 @@ export class ActivitiesModule {
 
   load(): void {
     this.ctx.app.vault.on("modify", this.onDataChange);
+    this.lastTodayKey = getTodayKey();
+    this.dayCheckInterval = setInterval(() => this.checkDayChange(), DAY_CHECK_INTERVAL_MS);
 
     this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-activities-view", (_source, el) => {
       el.addClass("opa-activities-view");
@@ -76,12 +103,24 @@ export class ActivitiesModule {
     this.runRefresh();
   };
 
+  private checkDayChange(): void {
+    const now = getTodayKey();
+    if (now !== this.lastTodayKey) {
+      this.lastTodayKey = now;
+      this.runRefresh();
+    }
+  }
+
   private runRefresh(): void {
     this.blocks.forEach((b) => b.refresh());
   }
 
   unload(): void {
     this.ctx.app.vault.off("modify", this.onDataChange);
+    if (this.dayCheckInterval !== null) {
+      clearInterval(this.dayCheckInterval);
+      this.dayCheckInterval = null;
+    }
     this.blocks.clear();
   }
 
@@ -117,14 +156,22 @@ export class ActivitiesModule {
     const alreadyGiven = byDateRewards[dateKey] ?? 0;
     const toGive = Math.max(0, count - alreadyGiven);
     if (toGive > 0 && this.ctx.plugin.settings.enableGamification) {
+      const activity = data.items.find((i) => i.id === activityId);
+      const activityDefault = this.ctx.plugin.settings.gamificationActivityDefaultDifficulty ?? "легкая";
+      const difficulty = activity?.difficulty ?? activityDefault;
+      const rewardsMap = this.ctx.plugin.settings.gamificationActivityDifficultyRewards ?? ACTIVITY_DIFFICULTY_REWARDS_DEFAULT;
+      const reward = getRewardForDifficulty(difficulty, {
+        difficultyRewards: rewardsMap,
+        defaultDifficulty: activityDefault,
+      });
       const state = await this.ctx.plugin.getGamificationState();
-      state.xp += ACTIVITIES_REWARD_XP * toGive;
-      state.gold += ACTIVITIES_REWARD_GOLD * toGive;
+      state.xp += reward.xp * toGive;
+      state.gold += reward.gold * toGive;
       this.ctx.plugin.scheduleGamificationSave();
       if (toGive === 1) {
-        new Notice(UI_LABELS.activities.rewardNotice);
+        new Notice(UI_LABELS.gamification.rewardLine(reward.xp, reward.gold));
       } else {
-        new Notice(`+${ACTIVITIES_REWARD_XP * toGive} XP, +${ACTIVITIES_REWARD_GOLD * toGive} Gold`);
+        new Notice(UI_LABELS.gamification.rewardLine(reward.xp * toGive, reward.gold * toGive));
       }
     }
     if (count > 0) {
@@ -158,7 +205,7 @@ export class ActivitiesModule {
 
       const body = createCollapsibleSection(container, L.title, STORAGE_KEY_ACTIVITIES);
 
-      const todayItems = data.items
+      const todayItems = getItemsSortedByFrequency(data)
         .map((item) => ({ item, count: this.getCount(data, item.id, todayKey) }))
         .filter(({ count }) => count > 0);
       if (!todayItems.length) {
@@ -170,26 +217,25 @@ export class ActivitiesModule {
           row.createEl("span", { cls: "opa-activity-name", text: item.name });
 
           const counterWrap = row.createDiv({ cls: "opa-activity-counter" });
-          const btnMinus = counterWrap.createEl("button", { cls: "opa-activity-counter-btn", attr: { type: "button", "aria-label": "Уменьшить" } });
-          btnMinus.setText("−");
-          const countSpan = counterWrap.createEl("span", { cls: "opa-activity-counter-value" });
-          countSpan.setText(String(count));
           const btnPlus = counterWrap.createEl("button", { cls: "opa-activity-counter-btn", attr: { type: "button", "aria-label": "Увеличить" } });
           btnPlus.setText("+");
+          const countSpan = counterWrap.createEl("span", { cls: "opa-activity-counter-value" });
+          countSpan.setText(String(count));
+          const btnMinus = counterWrap.createEl("button", { cls: "opa-activity-counter-btn", attr: { type: "button", "aria-label": "Уменьшить" } });
+          btnMinus.setText("−");
 
           const updateCount = (newCount: number) => {
             this.setCount(item.id, todayKey, newCount).then(() => {});
           };
-          btnMinus.addEventListener("click", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (count > 1) updateCount(count - 1);
-            else updateCount(0);
-          });
           btnPlus.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();
             updateCount(count + 1);
+          });
+          btnMinus.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (count > 1) updateCount(count - 1);
           });
 
           const uncheckBtn = row.createEl("button", {
@@ -234,9 +280,41 @@ export class ActivitiesModule {
     if (!trimmed) return false;
     if (currentData.items.some((i) => i.name === trimmed)) return false;
     const id = nextActivityId(currentData.items);
-    const items = [...currentData.items, { id, name: trimmed }];
+    const defaultDiff = (this.ctx.plugin.settings.gamificationActivityDefaultDifficulty ?? "легкая") as ActivityItem["difficulty"];
+    const items = [...currentData.items, { id, name: trimmed, difficulty: defaultDiff }];
     await writeDataFile(this.ctx.plugin, { activities: { ...currentData, items } });
     new Notice(`Добавлено: ${trimmed}`);
+    this.runRefresh();
+    return true;
+  }
+
+  /** Установить сложность активности. */
+  async setActivityDifficulty(activityId: string, difficulty: string): Promise<void> {
+    if (!isActivityDifficulty(difficulty)) return;
+    const data = await this.getActivitiesData();
+    const item = data.items.find((i) => i.id === activityId);
+    if (!item) return;
+    const next = data.items.map((i) => (i.id === activityId ? { ...i, difficulty } : i));
+    await writeDataFile(this.ctx.plugin, { activities: { ...data, items: next } });
+    this.runRefresh();
+  }
+
+  /** Переименовать активность в пуле */
+  async renameActivity(activityId: string, newName: string): Promise<boolean> {
+    const currentData = await this.getActivitiesData();
+    const trimmed = newName.trim();
+    if (!trimmed) return false;
+
+    // Защита от дубликатов
+    if (currentData.items.some((i) => i.id !== activityId && i.name === trimmed)) {
+      return false;
+    }
+
+    const items = currentData.items.map((i) =>
+      i.id === activityId ? { ...i, name: trimmed } : i
+    );
+
+    await writeDataFile(this.ctx.plugin, { activities: { ...currentData, items } });
     this.runRefresh();
     return true;
   }
@@ -248,13 +326,16 @@ export class ActivitiesModule {
       this.ctx.app,
       data,
       todayKey,
+      this.ctx.plugin.settings.gamificationActivityDefaultDifficulty ?? "легкая",
       (activityId, dateKey, isAdding) => this.toggleCompletion(activityId, dateKey, isAdding),
       () => this.getActivitiesData(),
       (name) => this.addActivityToPool(name),
       async (activityId) => {
         const current = await this.getActivitiesData();
         await this.removeActivity(activityId, current);
-      }
+      },
+      (activityId, newName) => this.renameActivity(activityId, newName),
+      (activityId, difficulty) => this.setActivityDifficulty(activityId, difficulty)
     ).open();
   }
 
@@ -273,10 +354,13 @@ class AllActivitiesModal extends Modal {
     app: import("obsidian").App,
     private data: ActivitiesData,
     private todayKey: string,
+    private defaultDifficulty: string,
     private onToggle: (activityId: string, dateKey: string, isAdding: boolean) => Promise<void>,
     private getData: () => Promise<ActivitiesData>,
     private onAddActivity: (name: string) => Promise<boolean>,
-    private onRemoveFromPool: (activityId: string) => Promise<void>
+    private onRemoveFromPool: (activityId: string) => Promise<void>,
+    private onRenameActivity: (activityId: string, newName: string) => Promise<boolean>,
+    private onDifficultyChange: (activityId: string, difficulty: string) => Promise<void>
   ) {
     super(app);
   }
@@ -287,6 +371,8 @@ class AllActivitiesModal extends Modal {
     this.titleEl.setText(L.allActivitiesTitle);
     this.contentEl.addClass("opa-all-activities-modal");
     this.modalEl.addClass("opa-all-activities-modal-wrap");
+    this.modalEl.style.width = "560px";
+    this.modalEl.style.maxWidth = "92vw";
 
     this.contentEl.createEl("h4", { text: L.selectTodayTitle, cls: "opa-all-activities-subtitle" });
     this.listWrap = this.contentEl.createDiv({ cls: "opa-activities-list opa-all-activities-list" });
@@ -329,7 +415,7 @@ class AllActivitiesModal extends Modal {
 
   private renderList(data: ActivitiesData): void {
     this.listWrap.empty();
-    for (const item of data.items) {
+    for (const item of getItemsSortedByFrequency(data)) {
       const countToday = (data.history[item.id] ?? {})[this.todayKey] ?? 0;
       const doneToday = countToday > 0;
 
@@ -337,23 +423,93 @@ class AllActivitiesModal extends Modal {
       const checkWrap = row.createEl("label", { cls: "opa-activity-check-wrap" });
       const check = checkWrap.createEl("input", { type: "checkbox", cls: "opa-activity-check" });
       check.checked = doneToday;
-      checkWrap.createEl("span", { cls: "opa-activity-name", text: item.name });
+      const nameSpan = checkWrap.createEl("span", { cls: "opa-activity-name", text: item.name });
 
       check.addEventListener("change", async () => {
         await this.onToggle(item.id, this.todayKey, check.checked);
       });
 
-      const delBtn = row.createEl("button", {
+      const difficultyWrap = row.createEl("div", { cls: "opa-activity-difficulty-wrap" });
+      const difficultySelect = difficultyWrap.createEl("select", { cls: "opa-activity-difficulty-select" });
+      const currentDifficulty = item.difficulty ?? this.defaultDifficulty;
+      for (const opt of ["легкая", "средняя", "сложная"] as const) {
+        const option = difficultySelect.createEl("option", { value: opt, text: DIFFICULTY_DISPLAY_LABELS[opt] });
+        if (opt === currentDifficulty) option.selected = true;
+      }
+      difficultySelect.addEventListener("change", async () => {
+        const value = difficultySelect.value;
+        await this.onDifficultyChange(item.id, value);
+        this.data = await this.getData();
+        this.renderList(this.data);
+      });
+
+      const actionsDiv = row.createEl("div", { cls: "opa-activity-row-actions" });
+
+      const editBtn = actionsDiv.createEl("button", {
+        text: UI_LABELS.common.edit,
+        cls: "gamification-shop-modal-del",
+        attr: { type: "button", "aria-label": "Переименовать" },
+      });
+
+      const delBtn = actionsDiv.createEl("button", {
         text: UI_LABELS.common.delete,
         cls: "gamification-shop-modal-del",
         attr: { type: "button", "aria-label": "Удалить из списка" },
       });
+
+      // Логика удаления
       delBtn.addEventListener("click", async (e) => {
         e.preventDefault();
         e.stopPropagation();
         await this.onRemoveFromPool(item.id);
         this.data = await this.getData();
         this.renderList(this.data);
+      });
+
+      // Логика редактирования (inline)
+      editBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        checkWrap.style.display = "none";
+        actionsDiv.style.display = "none";
+
+        const editInput = row.createEl("input", { type: "text", cls: "view-input opa-activity-edit-input" });
+        editInput.value = item.name;
+        row.insertBefore(editInput, actionsDiv);
+
+        const save = async () => {
+          const newName = editInput.value.trim();
+          if (newName && newName !== item.name) {
+            const ok = await this.onRenameActivity(item.id, newName);
+            if (ok) {
+              item.name = newName;
+              nameSpan.textContent = newName;
+            } else {
+              new Notice("Такая активность уже существует");
+            }
+          }
+          cancel();
+        };
+
+        const cancel = () => {
+          editInput.remove();
+          checkWrap.style.display = "";
+          actionsDiv.style.display = "";
+        };
+
+        editInput.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter") {
+            ev.preventDefault();
+            save();
+          } else if (ev.key === "Escape") {
+            ev.preventDefault();
+            cancel();
+          }
+        });
+
+        editInput.addEventListener("blur", () => save());
+        editInput.focus();
       });
     }
     if (!data.items.length) {
@@ -447,7 +603,21 @@ class ActivitiesStatisticsModal extends Modal {
 
   private renderLineChart(container: HTMLElement, activityId: string, width: number, height: number): void {
     const byDate = this.data.history[activityId] ?? {};
-    const days = 30;
+
+    // 1. Динамический диапазон (от первой отметки, но минимум 7 дней и максимум 30)
+    let days = 30;
+    const dateKeys = Object.keys(byDate).sort();
+    if (dateKeys.length > 0) {
+      const firstDate = new Date(dateKeys[0]);
+      const today = new Date();
+      const firstUTC = Date.UTC(firstDate.getFullYear(), firstDate.getMonth(), firstDate.getDate());
+      const todayUTC = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+      const diffDays = Math.floor((todayUTC - firstUTC) / (24 * 60 * 60 * 1000)) + 1;
+      days = Math.max(7, Math.min(30, diffDays));
+    } else {
+      days = 7;
+    }
+
     const points: { dateKey: string; value: number }[] = [];
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date();
@@ -459,7 +629,7 @@ class ActivitiesStatisticsModal extends Modal {
 
     const w = Math.round(width);
     const h = Math.round(height);
-    const padding = { top: 8, right: 0, bottom: 24, left: 16 };
+    const padding = { top: 8, right: 4, bottom: 24, left: 16 };
     const chartWidth = w - padding.left - padding.right;
     const chartHeight = h - padding.top - padding.bottom;
 
@@ -515,22 +685,51 @@ class ActivitiesStatisticsModal extends Modal {
     y0.setAttribute("text-anchor", "end");
     y0.setAttribute("class", "opa-chart-label");
     y0.textContent = "0";
-    const xStart = document.createElementNS(ns, "text");
-    xStart.setAttribute("x", String(padding.left));
-    xStart.setAttribute("y", String(h - 4));
-    xStart.setAttribute("text-anchor", "start");
-    xStart.setAttribute("class", "opa-chart-label");
-    xStart.textContent = formatShort(points[0]?.dateKey ?? "");
-    const xEnd = document.createElementNS(ns, "text");
-    xEnd.setAttribute("x", String(padding.left + chartWidth));
-    xEnd.setAttribute("y", String(h - 4));
-    xEnd.setAttribute("text-anchor", "end");
-    xEnd.setAttribute("class", "opa-chart-label");
-    xEnd.textContent = formatShort(points[points.length - 1]?.dateKey ?? "");
 
     svg.appendChild(yMax);
     svg.appendChild(y0);
-    svg.appendChild(xStart);
-    svg.appendChild(xEnd);
+
+    // 2. Равномерное распределение подписей по оси X
+    // Целимся максимум в 6 подписей, чтобы они не наезжали друг на друга при сжатии
+    const maxLabels = 6;
+    const labelStep = Math.max(1, Math.floor((points.length - 1) / (maxLabels - 1)));
+
+    for (let i = 0; i < points.length; i++) {
+      const isFirst = i === 0;
+      const isLast = i === points.length - 1;
+      const isStep = i % labelStep === 0;
+      // Не рисуем промежуточную подпись, если она слишком близко к последней дате
+      const isTooCloseToEnd = !isLast && (points.length - 1 - i < labelStep * 0.6);
+
+      if (isFirst || isLast || (isStep && !isTooCloseToEnd)) {
+        const xPos = Math.round(xScale(i));
+
+        // Засечка на оси
+        const tick = document.createElementNS(ns, "line");
+        tick.setAttribute("x1", String(xPos));
+        tick.setAttribute("y1", String(padding.top + chartHeight));
+        tick.setAttribute("x2", String(xPos));
+        tick.setAttribute("y2", String(padding.top + chartHeight + 4));
+        tick.setAttribute("class", "opa-chart-axis");
+        svg.appendChild(tick);
+
+        // Текст даты
+        const xText = document.createElementNS(ns, "text");
+        xText.setAttribute("x", String(xPos));
+        xText.setAttribute("y", String(h - 4));
+
+        if (isFirst) {
+          xText.setAttribute("text-anchor", "start");
+        } else if (isLast) {
+          xText.setAttribute("text-anchor", "end");
+        } else {
+          xText.setAttribute("text-anchor", "middle");
+        }
+
+        xText.setAttribute("class", "opa-chart-label");
+        xText.textContent = formatShort(points[i]?.dateKey ?? "");
+        svg.appendChild(xText);
+      }
+    }
   }
 }

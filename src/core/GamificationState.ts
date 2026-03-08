@@ -92,11 +92,34 @@ export interface InboxArchiveItem {
   completedAt: string;
 }
 
+const ACTIVITY_DIFFICULTY_OPTIONS = ["легкая", "средняя", "сложная"] as const;
+export type ActivityDifficulty = (typeof ACTIVITY_DIFFICULTY_OPTIONS)[number];
+
+/** Отображаемые подписи сложности (с заглавной буквы). */
+export const DIFFICULTY_DISPLAY_LABELS: Record<ActivityDifficulty, string> = {
+  легкая: "Легко",
+  средняя: "Средне",
+  сложная: "Сложно",
+};
+
+export function isActivityDifficulty(s: string): s is ActivityDifficulty {
+  return ACTIVITY_DIFFICULTY_OPTIONS.includes(s as ActivityDifficulty);
+}
+
 /** Элемент пула активностей (Logbook). */
 export interface ActivityItem {
   id: string;
   name: string;
+  /** Сложность для награды (легкая / средняя / сложная). */
+  difficulty?: ActivityDifficulty;
 }
+
+/** Награды по сложности для активностей (дефолт, если в настройках не задано). */
+export const ACTIVITY_DIFFICULTY_REWARDS_DEFAULT: Record<ActivityDifficulty, { xp: number; gold: number }> = {
+  легкая: { xp: 2, gold: 1 },
+  средняя: { xp: 5, gold: 2 },
+  сложная: { xp: 10, gold: 5 },
+};
 
 /** Данные пула активностей: список, история по датам (activityId -> dateKey -> количество выполнений), награды. */
 export interface ActivitiesData {
@@ -168,14 +191,20 @@ export async function readDataFile(storage: DataStorage): Promise<PluginDataFile
   }
 }
 
+function parseActivityItem(x: unknown): ActivityItem | null {
+  if (typeof x !== "object" || x === null || !("id" in x) || !("name" in x)) return null;
+  const o = x as Record<string, unknown>;
+  if (typeof o.id !== "string" || typeof o.name !== "string") return null;
+  const difficulty =
+    typeof o.difficulty === "string" && isActivityDifficulty(o.difficulty) ? o.difficulty : undefined;
+  return { id: o.id, name: o.name, ...(difficulty && { difficulty }) };
+}
+
 function parseActivitiesData(raw: unknown): ActivitiesData {
   if (!raw || typeof raw !== "object") return { items: [], history: {} };
   const d = raw as Record<string, unknown>;
   const items: ActivityItem[] = Array.isArray(d.items)
-    ? (d.items as unknown[]).filter(
-        (x): x is ActivityItem =>
-          typeof x === "object" && x !== null && "id" in x && "name" in x && typeof (x as ActivityItem).id === "string" && typeof (x as ActivityItem).name === "string"
-      )
+    ? (d.items as unknown[]).map(parseActivityItem).filter((x): x is ActivityItem => x !== null)
     : [];
   const hist = d.history;
   const history: Record<string, Record<string, number>> = {};
