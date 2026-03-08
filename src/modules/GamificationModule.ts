@@ -12,7 +12,7 @@ import {
 } from "../core/GamificationState";
 import { UI_LABELS } from "../ui/Labels";
 import { createCollapsibleSection } from "../ui/CollapsibleSection";
-import { Modal, TFile } from "obsidian";
+import { Modal, Notice, TFile } from "obsidian";
 
 /** Формат даты из frontmatter в DD-MM-YYYY (как на доске задач). */
 function formatDeadlineDisplay(raw: string): string {
@@ -100,6 +100,7 @@ export class GamificationModule {
         rewardMessage: L.rewardsReceived,
       });
       this.ctx.plugin.scheduleGamificationSave();
+      new Notice(L.rewardLine(reward.xp, reward.gold));
       setTimeout(() => this.runRefresh(), 50);
     });
 
@@ -153,6 +154,7 @@ export class GamificationModule {
 
   private scheduleRefresh = (): void => {
     if (!this.ctx.plugin.settings.enableGamification) return;
+    if (!this.isAnyBlockVisible()) return;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;

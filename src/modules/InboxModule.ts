@@ -1,7 +1,9 @@
 import type { ModuleContext } from "./types";
 import { Paths } from "../core/Paths";
 import { read } from "../core/FileIO";
-import { readDataFile, writeDataFile, getRewardForDifficulty, type InboxArchiveItem, INBOX_ARCHIVE_TRASH_PREFIX } from "../core/GamificationState";
+import { readDataFile, writeDataFile, type InboxArchiveItem, INBOX_ARCHIVE_TRASH_PREFIX } from "../core/GamificationState";
+
+const DEFAULT_INBOX_REWARDS = { xp: 5, gold: 2 };
 import { UI_LABELS } from "../ui/Labels";
 import { createCollapsibleSection } from "../ui/CollapsibleSection";
 import { Notice } from "obsidian";
@@ -97,6 +99,7 @@ export class InboxModule {
 
   private scheduleRefresh = (): void => {
     if (!this.ctx.plugin.settings.enableInbox) return;
+    if (!this.isAnyBlockVisible()) return;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
@@ -347,7 +350,7 @@ export class InboxModule {
     let gamificationPayload = data.gamification;
     if (this.ctx.plugin.settings.enableGamification) {
       const state = await this.ctx.plugin.getGamificationState();
-      const reward = getRewardForDifficulty(null, this.ctx.plugin.gamificationDefaults);
+      const reward = this.ctx.plugin.settings.gamificationInboxRewards ?? DEFAULT_INBOX_REWARDS;
       state.xp += reward.xp;
       state.gold += reward.gold;
       gamificationPayload = state;

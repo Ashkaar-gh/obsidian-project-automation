@@ -60,9 +60,11 @@ export class TrashModule {
 
   private onLeafChange = (): void => {
     if (!this.ctx.plugin.settings.enableTrash) return;
+    if (!this.isAnyBlockVisible()) return;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
+      if (!this.isAnyBlockVisible()) return;
       this.runRefresh();
     }, 300);
   };
@@ -71,9 +73,11 @@ export class TrashModule {
     if (!this.ctx.plugin.settings.enableTrash) return;
     const _file = data[0] as { path?: string } | undefined;
     if (_file?.path && _file.path !== this.getDataPath()) return;
+    if (!this.isAnyBlockVisible()) return;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
+      if (!this.isAnyBlockVisible()) return;
       this.runRefresh();
     }, 300);
   };

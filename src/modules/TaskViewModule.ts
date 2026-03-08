@@ -11,7 +11,7 @@ import { UI_LABELS } from "../ui/Labels";
 const DAILY_FOLDER = Paths.DAILY_FOLDER;
 const DATA_PATH = "data-opa-task-view-path";
 const DATA_NAME = "data-opa-task-view-name";
-const REFRESH_DEBOUNCE_MS = 500;
+const REFRESH_DEBOUNCE_MS = 2000;
 
 interface TaskViewBlock {
   el: HTMLElement;
@@ -124,8 +124,19 @@ export class TaskViewModule {
     this.scheduleRefresh();
   };
 
+  /** Есть ли хотя бы один блок opa-task-view в активной вкладке. */
+  private isAnyBlockVisible(): boolean {
+    const container = this.ctx.app.workspace.activeLeaf?.view?.containerEl;
+    if (!container) return false;
+    for (const b of this.blocks) {
+      if (b.el.isConnected && container.contains(b.el)) return true;
+    }
+    return false;
+  }
+
   /** Рефреш при изменении индекса daily (create/rename/delete/changed). */
   private scheduleRefresh = (): void => {
+    if (!this.isAnyBlockVisible()) return;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;

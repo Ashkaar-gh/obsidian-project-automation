@@ -32,6 +32,14 @@ export interface PluginSettings {
   gamificationDefaultDifficulty: string;
   /** Награды XP/золото по сложности задачи (геймификация). */
   gamificationDifficultyRewards: Record<string, { xp: number; gold: number }>;
+  /** Награды XP/золото по сложности активности (геймификация). */
+  gamificationActivityDifficultyRewards: Record<string, { xp: number; gold: number }>;
+  /** Сложность по умолчанию для активностей (геймификация). */
+  gamificationActivityDefaultDifficulty: string;
+  /** Награда за выполнение напоминания (фиксированная, без выбора сложности). */
+  gamificationReminderRewards: { xp: number; gold: number };
+  /** Награда за выполнение пункта в блокноте (фиксированная). */
+  gamificationInboxRewards: { xp: number; gold: number };
   /** Грейс-период для стрика (дней): дополнительные дни после срока, в которые выполнение ещё сохраняет стрик. 0 = строго. */
   gamificationStreakGraceDays: number;
   /** Пул активностей. */
@@ -54,11 +62,15 @@ const DEFAULT_SETTINGS: PluginSettings = {
   gamificationXpLevelBase: 20,
   gamificationDefaultDifficulty: "легкая",
   gamificationDifficultyRewards: { ...DEFAULT_DIFFICULTY_REWARDS },
+  gamificationActivityDifficultyRewards: { ...ACTIVITY_DIFFICULTY_REWARDS_DEFAULT },
+  gamificationActivityDefaultDifficulty: "легкая",
+  gamificationReminderRewards: { xp: 2, gold: 1 },
+  gamificationInboxRewards: { xp: 5, gold: 2 },
   gamificationStreakGraceDays: 0,
   enableActivities: true,
 };
 
-const REFRESH_DEBOUNCE_MS = 500;
+const REFRESH_DEBOUNCE_MS = 2000;
 import { TaskIndex } from "./core/TaskIndex";
 import { RemindersIndex } from "./core/RemindersIndex";
 import { Paths } from "./core/Paths";
@@ -66,6 +78,8 @@ import { DEFAULT_HOMEPAGE } from "./core/DefaultTemplates";
 import { TasksDashboardModule } from "./modules/TasksDashboardModule";
 import {
   DEFAULT_GAMIFICATION_DEFAULTS,
+  ACTIVITY_DIFFICULTY_REWARDS_DEFAULT,
+  DIFFICULTY_DISPLAY_LABELS,
   readDataFile,
   writeDataFile,
   readState,
@@ -214,6 +228,27 @@ export class ObsidianProjectAutomationPlugin extends Plugin {
       typeof migrated.gamificationDifficultyRewards !== "object"
     )
       migrated.gamificationDifficultyRewards = { ...DEFAULT_DIFFICULTY_REWARDS };
+    if (
+      !migrated.gamificationActivityDifficultyRewards ||
+      typeof migrated.gamificationActivityDifficultyRewards !== "object"
+    )
+      migrated.gamificationActivityDifficultyRewards = { ...ACTIVITY_DIFFICULTY_REWARDS_DEFAULT };
+    if (typeof migrated.gamificationActivityDefaultDifficulty !== "string")
+      migrated.gamificationActivityDefaultDifficulty = DEFAULT_SETTINGS.gamificationActivityDefaultDifficulty;
+    if (
+      !migrated.gamificationReminderRewards ||
+      typeof migrated.gamificationReminderRewards !== "object" ||
+      typeof (migrated.gamificationReminderRewards as { xp?: number; gold?: number }).xp !== "number" ||
+      typeof (migrated.gamificationReminderRewards as { xp?: number; gold?: number }).gold !== "number"
+    )
+      migrated.gamificationReminderRewards = { ...DEFAULT_SETTINGS.gamificationReminderRewards };
+    if (
+      !migrated.gamificationInboxRewards ||
+      typeof migrated.gamificationInboxRewards !== "object" ||
+      typeof (migrated.gamificationInboxRewards as { xp?: number; gold?: number }).xp !== "number" ||
+      typeof (migrated.gamificationInboxRewards as { xp?: number; gold?: number }).gold !== "number"
+    )
+      migrated.gamificationInboxRewards = { ...DEFAULT_SETTINGS.gamificationInboxRewards };
     if (typeof migrated.gamificationStreakGraceDays !== "number" || migrated.gamificationStreakGraceDays < 0)
       migrated.gamificationStreakGraceDays = DEFAULT_SETTINGS.gamificationStreakGraceDays;
     const withSyncedTrash: PluginSettings = {
@@ -727,20 +762,23 @@ class ObsidianProjectAutomationSettingTab extends PluginSettingTab {
               }
             })
         );
-      new Setting(gamificationWrap)
+      const xpGoldHint = " Первое поле - XP, второе - Gold.";
+
+      const tasksSection = gamificationWrap.createDiv({ cls: "opa-settings-gamification-section" });
+      tasksSection.createEl("div", { cls: "opa-settings-section-title", text: "Награды за сложность (задачи)" });
+      new Setting(tasksSection)
         .setName("Сложность по умолчанию")
         .setDesc("Если у задачи не указана сложность")
         .addDropdown((d) => {
-          d.addOption("легкая", "Легкая")
-            .addOption("средняя", "Средняя")
-            .addOption("сложная", "Сложная")
+          d.addOption("легкая", DIFFICULTY_DISPLAY_LABELS.легкая)
+            .addOption("средняя", DIFFICULTY_DISPLAY_LABELS.средняя)
+            .addOption("сложная", DIFFICULTY_DISPLAY_LABELS.сложная)
             .setValue(this.plugin.settings.gamificationDefaultDifficulty ?? "легкая")
             .onChange(async (v) => {
               this.plugin.settings.gamificationDefaultDifficulty = v;
               await saveRewards();
             });
         });
-      const xpGoldHint = " Первое поле - XP, второе - Gold.";
       const difficultyDesc: Record<"легкая" | "средняя" | "сложная", string> = {
         легкая: "XP и Gold за выполнение задачи легкой сложности." + xpGoldHint,
         средняя: "XP и Gold за выполнение задачи средней сложности." + xpGoldHint,
@@ -748,8 +786,8 @@ class ObsidianProjectAutomationSettingTab extends PluginSettingTab {
       };
       for (const key of ["легкая", "средняя", "сложная"] as const) {
         const r = rewards[key] ?? { xp: 0, gold: 0 };
-        new Setting(gamificationWrap)
-          .setName(`Награда: ${key}`)
+        new Setting(tasksSection)
+          .setName(`Награда: ${DIFFICULTY_DISPLAY_LABELS[key]}`)
           .setDesc(difficultyDesc[key])
           .addText((t) =>
             t
@@ -780,6 +818,125 @@ class ObsidianProjectAutomationSettingTab extends PluginSettingTab {
               })
           );
       }
+
+      const activitySection = gamificationWrap.createDiv({ cls: "opa-settings-gamification-section" });
+      activitySection.createEl("div", { cls: "opa-settings-section-title", text: "Награды за сложность (активности)" });
+      new Setting(activitySection)
+        .setName("Сложность по умолчанию")
+        .setDesc("Если у активности не указана сложность")
+        .addDropdown((d) => {
+          d.addOption("легкая", DIFFICULTY_DISPLAY_LABELS.легкая)
+            .addOption("средняя", DIFFICULTY_DISPLAY_LABELS.средняя)
+            .addOption("сложная", DIFFICULTY_DISPLAY_LABELS.сложная)
+            .setValue(this.plugin.settings.gamificationActivityDefaultDifficulty ?? "легкая")
+            .onChange(async (v) => {
+              this.plugin.settings.gamificationActivityDefaultDifficulty = v;
+              await saveRewards();
+            });
+        });
+      const activityRewards = this.plugin.settings.gamificationActivityDifficultyRewards ?? ACTIVITY_DIFFICULTY_REWARDS_DEFAULT;
+      const activityDifficultyDesc: Record<"легкая" | "средняя" | "сложная", string> = {
+        легкая: "XP и Gold за выполнение активности легкой сложности." + xpGoldHint,
+        средняя: "XP и Gold за выполнение активности средней сложности." + xpGoldHint,
+        сложная: "XP и Gold за выполнение активности тяжелой сложности." + xpGoldHint,
+      };
+      for (const key of ["легкая", "средняя", "сложная"] as const) {
+        const r = activityRewards[key] ?? { xp: 0, gold: 0 };
+        new Setting(activitySection)
+          .setName(`Награда: ${DIFFICULTY_DISPLAY_LABELS[key]}`)
+          .setDesc(activityDifficultyDesc[key])
+          .addText((t) =>
+            t
+              .setPlaceholder("XP")
+              .setValue(String(r.xp))
+              .onChange(async (v) => {
+                const n = parseInt(v, 10);
+                if (!isNaN(n) && n >= 0) {
+                  if (!this.plugin.settings.gamificationActivityDifficultyRewards) this.plugin.settings.gamificationActivityDifficultyRewards = { ...ACTIVITY_DIFFICULTY_REWARDS_DEFAULT };
+                  const cur = this.plugin.settings.gamificationActivityDifficultyRewards[key] ?? { xp: 0, gold: 0 };
+                  this.plugin.settings.gamificationActivityDifficultyRewards[key] = { ...cur, xp: n };
+                  await saveRewards();
+                }
+              })
+          )
+          .addText((t) =>
+            t
+              .setPlaceholder("Gold")
+              .setValue(String(r.gold))
+              .onChange(async (v) => {
+                const n = parseInt(v, 10);
+                if (!isNaN(n) && n >= 0) {
+                  if (!this.plugin.settings.gamificationActivityDifficultyRewards) this.plugin.settings.gamificationActivityDifficultyRewards = { ...ACTIVITY_DIFFICULTY_REWARDS_DEFAULT };
+                  const cur = this.plugin.settings.gamificationActivityDifficultyRewards[key] ?? { xp: 0, gold: 0 };
+                  this.plugin.settings.gamificationActivityDifficultyRewards[key] = { ...cur, gold: n };
+                  await saveRewards();
+                }
+              })
+          );
+      }
+
+      const fixedSection = gamificationWrap.createDiv({ cls: "opa-settings-gamification-section" });
+      fixedSection.createEl("div", { cls: "opa-settings-section-title", text: "Награды (напоминания и блокнот)" });
+      const reminderR = this.plugin.settings.gamificationReminderRewards ?? { xp: 2, gold: 1 };
+      new Setting(fixedSection)
+        .setName("Напоминание")
+        .setDesc("XP и Gold за выполнение напоминания." + xpGoldHint)
+        .addText((t) =>
+          t
+            .setPlaceholder("XP")
+            .setValue(String(reminderR.xp))
+            .onChange(async (v) => {
+              const n = parseInt(v, 10);
+              if (!isNaN(n) && n >= 0) {
+                if (!this.plugin.settings.gamificationReminderRewards) this.plugin.settings.gamificationReminderRewards = { xp: 2, gold: 1 };
+                this.plugin.settings.gamificationReminderRewards = { ...this.plugin.settings.gamificationReminderRewards, xp: n };
+                await saveRewards();
+              }
+            })
+        )
+        .addText((t) =>
+          t
+            .setPlaceholder("Gold")
+            .setValue(String(reminderR.gold))
+            .onChange(async (v) => {
+              const n = parseInt(v, 10);
+              if (!isNaN(n) && n >= 0) {
+                if (!this.plugin.settings.gamificationReminderRewards) this.plugin.settings.gamificationReminderRewards = { xp: 2, gold: 1 };
+                this.plugin.settings.gamificationReminderRewards = { ...this.plugin.settings.gamificationReminderRewards, gold: n };
+                await saveRewards();
+              }
+            })
+        );
+      const inboxR = this.plugin.settings.gamificationInboxRewards ?? { xp: 5, gold: 2 };
+      new Setting(fixedSection)
+        .setName("Блокнот")
+        .setDesc("XP и Gold за выполнение пункта в блокноте (отметка «Сделано»)." + xpGoldHint)
+        .addText((t) =>
+          t
+            .setPlaceholder("XP")
+            .setValue(String(inboxR.xp))
+            .onChange(async (v) => {
+              const n = parseInt(v, 10);
+              if (!isNaN(n) && n >= 0) {
+                if (!this.plugin.settings.gamificationInboxRewards) this.plugin.settings.gamificationInboxRewards = { xp: 5, gold: 2 };
+                this.plugin.settings.gamificationInboxRewards = { ...this.plugin.settings.gamificationInboxRewards, xp: n };
+                await saveRewards();
+              }
+            })
+        )
+        .addText((t) =>
+          t
+            .setPlaceholder("Gold")
+            .setValue(String(inboxR.gold))
+            .onChange(async (v) => {
+              const n = parseInt(v, 10);
+              if (!isNaN(n) && n >= 0) {
+                if (!this.plugin.settings.gamificationInboxRewards) this.plugin.settings.gamificationInboxRewards = { xp: 5, gold: 2 };
+                this.plugin.settings.gamificationInboxRewards = { ...this.plugin.settings.gamificationInboxRewards, gold: n };
+                await saveRewards();
+              }
+            })
+        );
     }
 
     new Setting(containerEl)

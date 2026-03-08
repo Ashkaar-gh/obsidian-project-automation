@@ -1,5 +1,12 @@
 /* Таблицы Home/Project: загрузка, TOC, таблица, группы, строки задач, селект статуса, скролл и подсветка. */
 
+/* В режиме editing — без серой оконтовки вокруг таблицы (как у opa-task-view). */
+.markdown-source-view.mod-cm6 .opa-project-view,
+.markdown-source-view.mod-cm6 .opa-project-view .pv-table {
+    outline: none !important;
+    box-shadow: none !important;
+}
+
 .pv-loading,
 .pv-empty-message {
     text-align: center;

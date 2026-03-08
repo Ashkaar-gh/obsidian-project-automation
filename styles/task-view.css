@@ -216,6 +216,25 @@
     background-color: transparent !important;
 }
 
+.markdown-source-view.mod-cm6 .cm-embed-block:has(.block-language-opa-project-view),
+.markdown-source-view.mod-cm6 .cm-embed-block:has(.opa-project-view) {
+    box-shadow: none !important;
+    border: none !important;
+    outline: none !important;
+    background-color: transparent !important;
+    cursor: default !important;
+}
+.markdown-source-view.mod-cm6 .cm-embed-block:has(.block-language-opa-project-view) .edit-block-button,
+.markdown-source-view.mod-cm6 .cm-embed-block:has(.opa-project-view) .edit-block-button {
+    display: none !important;
+}
+.markdown-source-view.mod-cm6 .block-language-opa-project-view {
+    box-shadow: none !important;
+    border: none !important;
+    outline: none !important;
+    background-color: transparent !important;
+}
+
 .block-language-dataviewjs textarea,
 .block-language-dataviewjs input {
     cursor: text !important;

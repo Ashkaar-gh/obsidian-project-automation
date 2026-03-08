@@ -293,6 +293,10 @@
 }
 
 /* Модалка «Все активности» */
+.modal.opa-all-activities-modal-wrap {
+  width: 560px;
+  max-width: 92vw;
+}
 .opa-all-activities-modal-wrap .modal-close-button {
   display: none;
 }
@@ -358,4 +362,26 @@
   display: flex;
   gap: 0.5rem;
   justify-content: flex-end;
+}
+
+.opa-all-activities-modal .opa-activity-difficulty-wrap {
+  flex-shrink: 0;
+}
+.opa-all-activities-modal .opa-activity-difficulty-select {
+  min-width: 4.8em;
+  padding: 2px 4px;
+  font-size: 0.85em;
+  text-align: center;
+}
+
+.opa-all-activities-modal .opa-activity-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.opa-all-activities-modal .opa-activity-edit-input {
+  flex: 1;
+  min-width: 0;
+  margin-right: 6px;
 }

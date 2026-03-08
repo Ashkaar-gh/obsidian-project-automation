@@ -1,9 +1,9 @@
 {
   "id": "obsidian-project-automation",
   "name": "Obsidian Project Automation",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "1.0.0",
-  "description": "Шаблоны и скрипты для автоматизации проектов и задач: GTD-воркфлоу, доска задач, напоминания, геймификация. Модульные фичи и нативный рефреш.",
+  "description": "Шаблоны и скрипты для автоматизации проектов и задач",
   "author": "",
   "isDesktopOnly": false
 }

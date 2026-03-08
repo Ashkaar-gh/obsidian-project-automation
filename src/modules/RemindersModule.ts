@@ -9,7 +9,10 @@ import {
   deleteLineAtIndex,
   toggleTaskCheckbox,
 } from "../core/FileIO";
-import { readDataFile, writeDataFile, getRewardForDifficulty } from "../core/GamificationState";
+import { readDataFile, writeDataFile } from "../core/GamificationState";
+
+const DEFAULT_REMINDER_REWARDS = { xp: 2, gold: 1 };
+
 import { TFile, Notice, Modal } from "obsidian";
 import {
   REMINDER_DATE_TAG_REGEX,
@@ -97,7 +100,7 @@ export class RemindersModule {
   }
 
   private recurCompletionDebounce: ReturnType<typeof setTimeout> | null = null;
-  private readonly RECUR_DEBOUNCE_MS = 600;
+  private readonly RECUR_DEBOUNCE_MS = 2500;
 
   /** Обработать файл: для выполненных повторяющихся напоминаний создать следующее вхождение (если отмечено в самой заметке, не в блоке). */
   private async processFileRecurringCompletions(filePath: string): Promise<void> {
@@ -193,6 +196,7 @@ export class RemindersModule {
 
   private scheduleRefresh = (): void => {
     if (!this.ctx.plugin.settings.enableReminders) return;
+    if (!this.isAnyBlockVisible()) return;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
@@ -790,9 +794,9 @@ export class RemindersModule {
       let gamificationPayload = data.gamification;
       if (this.ctx.plugin.settings.enableGamification) {
         const state = await this.ctx.plugin.getGamificationState();
-        const reward = getRewardForDifficulty(null, this.ctx.plugin.gamificationDefaults);
-        state.xp += reward.xp;
-        state.gold += reward.gold;
+        const r = this.ctx.plugin.settings.gamificationReminderRewards ?? DEFAULT_REMINDER_REWARDS;
+        state.xp += r.xp;
+        state.gold += r.gold;
         if (item.isRecurring && parsed) {
           const streakKey = item.text.trim() || "reminder";
           const graceMs = (this.ctx.plugin.settings.gamificationStreakGraceDays ?? 0) * 24 * 60 * 60 * 1000;
@@ -862,9 +866,9 @@ export class RemindersModule {
     if (this.ctx.plugin.settings.enableGamification) {
       if (item.filePath !== dataPath) {
         const state = await this.ctx.plugin.getGamificationState();
-        const reward = getRewardForDifficulty(null, this.ctx.plugin.gamificationDefaults);
-        state.xp += reward.xp;
-        state.gold += reward.gold;
+        const r = this.ctx.plugin.settings.gamificationReminderRewards ?? DEFAULT_REMINDER_REWARDS;
+        state.xp += r.xp;
+        state.gold += r.gold;
         if (item.isRecurring) {
           const streakKey = item.text.trim() || "reminder";
           const recurrence = parseRecurrenceFromText(item.lineText);
@@ -882,9 +886,9 @@ export class RemindersModule {
         }
         this.ctx.plugin.scheduleGamificationSave();
       }
-      const reward = getRewardForDifficulty(null, this.ctx.plugin.gamificationDefaults);
       this.ctx.plugin.gamification?.updateState?.();
-      new Notice(`${UI_LABELS.reminders.notices.completed} ${UI_LABELS.gamification.rewardLine(reward.xp, reward.gold)}`);
+      const r = this.ctx.plugin.settings.gamificationReminderRewards ?? DEFAULT_REMINDER_REWARDS;
+      new Notice(`${UI_LABELS.reminders.notices.completed} ${UI_LABELS.gamification.rewardLine(r.xp, r.gold)}`);
     } else {
       new Notice(UI_LABELS.reminders.notices.completed);
     }

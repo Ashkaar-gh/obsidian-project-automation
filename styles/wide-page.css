@@ -1,5 +1,34 @@
-/* Ширина контента на всю доступную ширину для страниц с классом wide-page. */
-
 body .wide-page {
     --file-line-width: 100%;
+    --max-width: 100%;
+    --line-width: 100%;
+    --line-width-adaptive: 100%;
+    --line-width-wide: 100%;
+}
+
+/* Reading View */
+body .wide-page .markdown-preview-view.is-readable-line-width .markdown-preview-sizer {
+    max-width: 100% !important;
+    width: 100% !important;
+}
+
+/* Live Preview/Source Mode) */
+body .wide-page .markdown-source-view.mod-cm6.is-readable-line-width .cm-sizer,
+body .wide-page .markdown-source-view.mod-cm6.is-readable-line-width .cm-content {
+    max-width: 100% !important;
+    width: 100% !important;
+}
+
+/* Inline Title */
+body .wide-page .markdown-source-view.mod-cm6.is-readable-line-width .inline-title {
+    max-width: 100% !important;
+    width: 100% !important;
+}
+
+/* Дополнительная страховка для блоков кода и таблиц (некоторые темы сжимают их отдельно) */
+body .wide-page .markdown-preview-view.is-readable-line-width .block-language-dataview,
+body .wide-page .markdown-preview-view.is-readable-line-width .block-language-dataviewjs,
+body .wide-page .markdown-source-view.mod-cm6.is-readable-line-width .cm-embed-block,
+body .wide-page table {
+    max-width: 100% !important;
 }
