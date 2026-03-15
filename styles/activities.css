@@ -32,6 +32,9 @@
 .opa-activities-list:not(.opa-all-activities-list) .opa-activity-name {
   flex: 0 1 auto;
 }
+.opa-activities-list:not(.opa-all-activities-list) .opa-activity-name-link {
+  cursor: pointer;
+}
 .opa-activity-counter {
   display: flex;
   align-items: center;
@@ -146,17 +149,54 @@
   box-sizing: border-box;
   min-width: 0;
 }
-.opa-stats-modal-wrap .modal-content {
-  max-height: 85vh;
-  overflow-y: auto;
-  width: 100% !important;
-  max-width: 100% !important;
-  box-sizing: border-box;
-}
 .opa-stats-modal-wrap.modal {
   min-width: 400px;
   width: min(900px, 95vw) !important;
   max-width: 95vw !important;
+  max-height: 85vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.opa-stats-modal-wrap .modal-content,
+.opa-stats-modal-wrap .opa-activities-stats-modal {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box;
+}
+.opa-stats-modal-wrap .opa-stats-modal-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 8px 0 2px;
+  box-sizing: border-box;
+}
+.opa-stats-modal-wrap .opa-activities-search-wrap {
+  margin-top: 2px;
+  margin-bottom: 0.75rem;
+  padding-left: 2px;
+  padding-right: 2px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+.opa-stats-modal-wrap .opa-activities-search-input {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.9em;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background-color: var(--background-primary-alt);
+  color: var(--text-normal);
+  box-sizing: border-box;
+  outline-offset: 0;
+}
+.opa-stats-modal-wrap .opa-activities-search-input::placeholder {
+  color: var(--text-faint);
 }
 .opa-activities-stats-modal .opa-stats-activity-section {
   margin-bottom: 0.5rem;
@@ -197,9 +237,7 @@
 .opa-activities-stats-modal .opa-stats-modal-footer {
   display: flex;
   justify-content: flex-end;
-  margin-top: 1rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 0.25rem;
 }
 
 .opa-stats-activity-section {
@@ -296,11 +334,57 @@
 .modal.opa-all-activities-modal-wrap {
   width: 560px;
   max-width: 92vw;
+  max-height: 85vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 .opa-all-activities-modal-wrap .modal-close-button {
   display: none;
 }
+.opa-all-activities-modal-wrap .opa-all-activities-modal {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.opa-all-activities-modal .opa-activities-search-wrap {
+  flex-shrink: 0;
+}
+.opa-all-activities-modal .opa-all-activities-modal-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 8px 0 2px;
+  box-sizing: border-box;
+}
+.opa-activities-search-wrap {
+  margin-top: 2px;
+  margin-bottom: 0.5rem;
+  padding-left: 2px;
+  padding-right: 2px;
+  box-sizing: border-box;
+}
+.opa-activities-search-input {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.9em;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background-color: var(--background-primary-alt);
+  color: var(--text-normal);
+  box-sizing: border-box;
+  outline-offset: 0;
+}
+.opa-activities-search-input::placeholder {
+  color: var(--text-faint);
+}
+.opa-all-activities-modal .opa-all-activities-pool-section {
+  flex-shrink: 0;
+}
 .opa-all-activities-modal .opa-all-activities-footer {
+  flex-shrink: 0;
   display: flex;
   gap: 10px;
   justify-content: flex-end;
@@ -338,8 +422,6 @@
   min-width: 0;
 }
 .opa-all-activities-modal .opa-all-activities-list {
-  max-height: 50vh;
-  overflow-y: auto;
   margin-bottom: 0.5rem;
 }
 
@@ -355,7 +437,7 @@
   font-size: 0.95em;
   border-radius: 4px;
   border: 1px solid var(--background-modifier-border);
-  background: var(--background-primary);
+  background-color: var(--background-primary-alt);
   color: var(--text-normal);
 }
 .opa-activities-modal-btns {
@@ -374,6 +456,17 @@
   text-align: center;
 }
 
+.opa-all-activities-modal .opa-activity-row-actions,
+.opa-all-activities-modal .opa-activity-difficulty-wrap {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.opa-all-activities-modal .opa-activity-row:hover .opa-activity-row-actions,
+.opa-all-activities-modal .opa-activity-row:hover .opa-activity-difficulty-wrap {
+  visibility: visible;
+  opacity: 1;
+}
 .opa-all-activities-modal .opa-activity-row-actions {
   display: flex;
   gap: 6px;

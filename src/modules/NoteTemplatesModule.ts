@@ -11,6 +11,8 @@ import {
 } from "../core/DefaultTemplates";
 import { readDataFile, writeDataFile } from "../core/GamificationState";
 import { formatReminderDateTag } from "../core/ReminderDataUtils";
+import { getDropdownOptions } from "../core/StatusConfig";
+import { UI_LABELS } from "../ui/Labels";
 
 /**
  * Создание заметок по шаблонам: команды «Создать заметку», «Создать задачу», «Создать проект»,
@@ -621,16 +623,18 @@ class ChooseTemplateModal extends Modal {
   }
 }
 
-/** Окно выбора даты для заголовка в ежедневной (степперы месяц/год + день). */
+/** Окно выбора даты для заголовка в ежедневной (степперы день/месяц/год, Tab/стрелки/Enter как в активностях). */
 class DailyHeadingDateModal extends Modal {
   private value = "";
+  private keydownHandler: ((e: KeyboardEvent) => void) | null = null;
 
   constructor(
     app: App,
-    private readonly onDone: (value: string | null) => void
+    private readonly onDone: (value: string | null) => void,
+    title = "Дата ежедневной заметки"
   ) {
     super(app);
-    this.setTitle("Дата ежедневной заметки");
+    this.setTitle(title);
   }
 
   onOpen(): void {
@@ -648,23 +652,82 @@ class DailyHeadingDateModal extends Modal {
       if (selectedDay > maxDay) selectedDay = maxDay;
     };
 
+    const doChangeDay = (delta: number): void => {
+      selectedDay += delta;
+      if (selectedDay < 1) {
+        selectedMonth--;
+        if (selectedMonth < 1) {
+          selectedMonth = 12;
+          selectedYear--;
+        }
+        selectedDay = getDaysInMonth(selectedYear, selectedMonth - 1);
+      } else {
+        const maxDay = getDaysInMonth(selectedYear, selectedMonth - 1);
+        if (selectedDay > maxDay) {
+          selectedDay = 1;
+          selectedMonth++;
+          if (selectedMonth > 12) {
+            selectedMonth = 1;
+            selectedYear++;
+          }
+        }
+      }
+      clampDay();
+      updateLabels();
+    };
+
+    const doChangeMonth = (delta: number): void => {
+      selectedMonth += delta;
+      if (selectedMonth > 12) {
+        selectedMonth = 1;
+        selectedYear++;
+      } else if (selectedMonth < 1) {
+        selectedMonth = 12;
+        selectedYear--;
+      }
+      const maxDay = getDaysInMonth(selectedYear, selectedMonth - 1);
+      if (selectedDay > maxDay) selectedDay = maxDay;
+      clampDay();
+      updateLabels();
+    };
+
+    const doChangeYear = (delta: number): void => {
+      selectedYear += delta;
+      if (selectedYear < yearMin) selectedYear = yearMin;
+      if (selectedYear > yearMax) selectedYear = yearMax;
+      clampDay();
+      updateLabels();
+    };
+
+    const doConfirm = (): void => {
+      clampDay();
+      const dayStr = String(selectedDay).padStart(2, "0");
+      const monthStr = String(selectedMonth).padStart(2, "0");
+      this.value = `${dayStr}-${monthStr}-${selectedYear}`;
+      this.onDone(this.value);
+      this.close();
+    };
+
     const steppersWrap = contentEl.createDiv({ cls: "opa-daily-heading-date-steppers-wrap" });
     const monthWrap = steppersWrap.createDiv({ cls: "gamification-completed-month-wrap opa-daily-heading-date-steppers" });
 
     const dayGroup = monthWrap.createDiv({ cls: "gamification-month-group" });
     const dayStepper = dayGroup.createDiv({ cls: "gamification-stepper-group" });
+    dayStepper.tabIndex = 0;
     const dayPrev = dayStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "‹" });
     const dayValue = dayStepper.createEl("span", { cls: "gamification-stepper-value" });
     const dayNext = dayStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "›" });
 
     const monthGroup = monthWrap.createDiv({ cls: "gamification-month-group" });
     const monthStepper = monthGroup.createDiv({ cls: "gamification-stepper-group" });
+    monthStepper.tabIndex = 0;
     const monthPrev = monthStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "‹" });
     const monthValue = monthStepper.createEl("span", { cls: "gamification-stepper-value gamification-stepper-month" });
     const monthNext = monthStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "›" });
 
     const yearGroup = monthWrap.createDiv({ cls: "gamification-month-group" });
     const yearStepper = yearGroup.createDiv({ cls: "gamification-stepper-group" });
+    yearStepper.tabIndex = 0;
     const yearPrev = yearStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "‹" });
     const yearValue = yearStepper.createEl("span", { cls: "gamification-stepper-value" });
     const yearNext = yearStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "›" });
@@ -676,57 +739,12 @@ class DailyHeadingDateModal extends Modal {
       yearValue.setText(String(selectedYear));
     };
 
-    dayPrev.addEventListener("click", () => {
-      if (selectedDay > 1) {
-        selectedDay--;
-      } else {
-        if (selectedMonth === 1) {
-          selectedMonth = 12;
-          if (selectedYear > yearMin) selectedYear--;
-        } else selectedMonth--;
-        selectedDay = getDaysInMonth(selectedYear, selectedMonth - 1);
-      }
-      updateLabels();
-    });
-    dayNext.addEventListener("click", () => {
-      const maxDay = getDaysInMonth(selectedYear, selectedMonth - 1);
-      if (selectedDay < maxDay) {
-        selectedDay++;
-      } else {
-        if (selectedMonth === 12) {
-          selectedMonth = 1;
-          if (selectedYear < yearMax) selectedYear++;
-        } else selectedMonth++;
-        selectedDay = 1;
-      }
-      updateLabels();
-    });
-    monthPrev.addEventListener("click", () => {
-      if (selectedMonth === 1) {
-        selectedMonth = 12;
-        if (selectedYear > yearMin) selectedYear--;
-      } else selectedMonth--;
-      updateLabels();
-    });
-    monthNext.addEventListener("click", () => {
-      if (selectedMonth === 12) {
-        selectedMonth = 1;
-        if (selectedYear < yearMax) selectedYear++;
-      } else selectedMonth++;
-      updateLabels();
-    });
-    yearPrev.addEventListener("click", () => {
-      if (selectedYear > yearMin) {
-        selectedYear--;
-        updateLabels();
-      }
-    });
-    yearNext.addEventListener("click", () => {
-      if (selectedYear < yearMax) {
-        selectedYear++;
-        updateLabels();
-      }
-    });
+    dayPrev.addEventListener("click", () => doChangeDay(-1));
+    dayNext.addEventListener("click", () => doChangeDay(1));
+    monthPrev.addEventListener("click", () => doChangeMonth(-1));
+    monthNext.addEventListener("click", () => doChangeMonth(1));
+    yearPrev.addEventListener("click", () => doChangeYear(-1));
+    yearNext.addEventListener("click", () => doChangeYear(1));
 
     const currentDayRow = steppersWrap.createDiv({ cls: "opa-daily-heading-current-day-row" });
     const currentDayBtn = currentDayRow.createEl("button", {
@@ -743,6 +761,34 @@ class DailyHeadingDateModal extends Modal {
 
     updateLabels();
 
+    const steppers = [dayStepper, monthStepper, yearStepper];
+    this.keydownHandler = (e: KeyboardEvent) => {
+      if (e.key === "Enter" && steppers.includes(document.activeElement as HTMLElement)) {
+        e.preventDefault();
+        doConfirm();
+        return;
+      }
+      if (e.key === "Tab") {
+        const idx = steppers.indexOf(document.activeElement as HTMLElement);
+        if (idx >= 0) {
+          e.preventDefault();
+          const next = e.shiftKey ? (idx - 1 + 3) % 3 : (idx + 1) % 3;
+          steppers[next].focus();
+        }
+        return;
+      }
+      const focusedIdx = steppers.indexOf(document.activeElement as HTMLElement);
+      if (focusedIdx < 0) return;
+      const delta = e.key === "ArrowLeft" || e.key === "ArrowDown" ? -1 : e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : 0;
+      if (delta === 0) return;
+      e.preventDefault();
+      if (focusedIdx === 0) doChangeDay(delta);
+      else if (focusedIdx === 1) doChangeMonth(delta);
+      else doChangeYear(delta);
+    };
+    contentEl.addEventListener("keydown", this.keydownHandler);
+    setTimeout(() => dayStepper.focus(), 0);
+
     const btnRow = contentEl.createDiv({ cls: "opa-daily-heading-date-buttons" });
     const cancelBtn = btnRow.createEl("button", { text: "Отмена", cls: "mod-secondary" });
     const okBtn = btnRow.createEl("button", { text: "OK", cls: "mod-cta" });
@@ -752,14 +798,14 @@ class DailyHeadingDateModal extends Modal {
       this.close();
     };
 
-    okBtn.onclick = () => {
-      clampDay();
-      const dayStr = String(selectedDay).padStart(2, "0");
-      const monthStr = String(selectedMonth).padStart(2, "0");
-      this.value = `${dayStr}-${monthStr}-${selectedYear}`;
-      this.onDone(this.value);
-      this.close();
-    };
+    okBtn.onclick = () => doConfirm();
+  }
+
+  onClose(): void {
+    if (this.keydownHandler) {
+      this.contentEl.removeEventListener("keydown", this.keydownHandler);
+      this.keydownHandler = null;
+    }
   }
 }
 
@@ -771,6 +817,8 @@ class CreateTaskModal extends Modal {
   private dateMode: "today" | "choose" = "today";
   private dateChosen = "";
   private difficulty = "Легко";
+  /** Статус задачи: пустая строка = без статуса. */
+  private status = UI_LABELS.tasks.defaultStatus;
   private group = "";
   private templateKey = "task";
   private dailyHeadingMode: "today" | "choose" | "none" = "today";
@@ -796,6 +844,7 @@ class CreateTaskModal extends Modal {
       environment: string;
       date: string;
       difficulty: string;
+      status: string;
       group: string;
       templateKey: string;
       dailyHeadingMode: "today" | "choose" | "none";
@@ -911,7 +960,7 @@ class CreateTaskModal extends Modal {
     form.style.boxSizing = "border-box";
 
     new Setting(form)
-      .setName("Шаблон")
+      .setName("Шаблон задачи")
       .addDropdown((d) => {
         for (const { key, label } of meta.taskTemplates) {
           d.addOption(key, label);
@@ -960,8 +1009,8 @@ class CreateTaskModal extends Modal {
     if (initialTemplate?.defaultGroup) {
       this.group = initialTemplate.defaultGroup;
     }
-    new Setting(form).setName("Название").addText((t) =>
-      t.setPlaceholder("Название").setValue(this.name).onChange((v) => (this.name = v))
+    new Setting(form).setName("Название задачи").addText((t) =>
+      t.setPlaceholder("Название задачи").setValue(this.name).onChange((v) => (this.name = v))
     );
     const contextOpts = parseCommaSeparatedOptions(this.ctx.plugin.settings.contextOptions);
     const contextList = contextOpts.length > 0 ? contextOpts : meta.contexts;
@@ -980,7 +1029,7 @@ class CreateTaskModal extends Modal {
     );
     this.addMultiSelectRow(form, "Контекст", contextList, () => this.context, (v) => (this.context = v));
     this.addMultiSelectRow(form, "Окружение", environmentList, () => this.environment, (v) => (this.environment = v));
-    const dateSetting = new Setting(form).setName("Дата");
+    const dateSetting = new Setting(form).setName("Дата задачи");
     const dateWrap = dateSetting.controlEl.createDiv({ cls: "opa-multi-select-row" });
     const dateSummary = dateWrap.createSpan({ cls: "opa-multi-select-summary" });
     const getDateSummary = (): string => {
@@ -1009,7 +1058,7 @@ class CreateTaskModal extends Modal {
             dateDropdown.value = "today";
             dateSummary.setText(getDateSummary());
           }
-        });
+        }, "Дата задачи");
         modal.open();
       } else {
         this.dateMode = "today";
@@ -1019,18 +1068,27 @@ class CreateTaskModal extends Modal {
     });
     if (this.ctx.plugin.settings.enableGamification) {
       new Setting(form)
-        .setName("Сложность")
+        .setName("Сложность задачи")
         .addDropdown((d) => {
-          d.addOption("", "—");
+          d.addOption("", "-");
           for (const v of DIFFICULTY_OPTIONS) d.addOption(v, v);
           d.setValue(this.difficulty).onChange((v) => (this.difficulty = v));
         });
     }
     new Setting(form)
-      .setName("Группа")
+      .setName("Статус задачи")
+      .addDropdown((d) => {
+        d.addOption("", "-");
+        for (const { value, label } of getDropdownOptions()) {
+          d.addOption(value, label);
+        }
+        d.setValue(this.status || "").onChange((v) => (this.status = v ?? ""));
+      });
+    new Setting(form)
+      .setName("Группа задачи")
       .addText((t) => {
         this.groupInputRef = t;
-        t.setPlaceholder("Группа")
+        t.setPlaceholder("Группа задачи")
           .setValue(this.group)
           .onChange((v) => (this.group = v));
       });
@@ -1048,7 +1106,7 @@ class CreateTaskModal extends Modal {
             this.deadline = value;
             setDeadlineSummary();
           }
-        });
+        }, "Дедлайн");
         modal.open();
       };
       const btn = deadlineWrap.createEl("button", { text: "Выбрать дату", cls: "mod-secondary" });
@@ -1059,7 +1117,7 @@ class CreateTaskModal extends Modal {
     this.customFieldsContainer = customSection.createDiv({ cls: "opa-create-task-custom-fields" });
     this.renderCustomFields();
     let lastMode: "today" | "choose" | "none" = this.dailyHeadingMode;
-    const headingSetting = new Setting(form).setName("Заголовок");
+    const headingSetting = new Setting(form).setName("Дата ежедневной заметки");
     const headingWrap = headingSetting.controlEl.createDiv({ cls: "opa-multi-select-row" });
     const headingSummary = headingWrap.createSpan({ cls: "opa-multi-select-summary" });
     const formatDateForSummary = (): string => {
@@ -1074,7 +1132,7 @@ class CreateTaskModal extends Modal {
     };
     headingSummary.setText(getHeadingSummary());
     const headingDropdown = headingWrap.createEl("select", { cls: "dropdown" });
-    headingDropdown.createEl("option", { value: "none", text: "Не создавать заголовок" });
+    headingDropdown.createEl("option", { value: "none", text: "-" });
     headingDropdown.createEl("option", { value: "today", text: "Сегодняшний день" });
     headingDropdown.createEl("option", { value: "choose", text: "Выбрать день" });
     headingDropdown.value = this.dailyHeadingMode;
@@ -1094,7 +1152,7 @@ class CreateTaskModal extends Modal {
             headingDropdown.value = lastMode;
             headingSummary.setText(getHeadingSummary());
           }
-        });
+        }, "Дата ежедневной заметки");
         modal.open();
       } else {
         this.dailyHeadingMode = newMode;
@@ -1118,6 +1176,7 @@ class CreateTaskModal extends Modal {
         environment: this.environment,
         date: this.dateMode === "today" ? "" : this.dateChosen,
         difficulty: this.ctx.plugin.settings.enableGamification ? this.difficulty : "",
+        status: this.status,
         group: this.group,
         templateKey: this.templateKey,
         dailyHeadingMode: this.dailyHeadingMode,
@@ -1334,6 +1393,7 @@ export class NoteTemplatesModule {
       environment: string;
       date: string;
       difficulty: string;
+      status: string;
       group: string;
       templateKey: string;
       dailyHeadingMode: "today" | "choose" | "none";
@@ -1411,6 +1471,7 @@ export class NoteTemplatesModule {
     environment: string;
     date: string;
     difficulty: string;
+    status: string;
     group: string;
     templateKey: string;
     dailyHeadingMode: "today" | "choose" | "none";
@@ -1432,6 +1493,11 @@ export class NoteTemplatesModule {
       .replace(/%%date%%/g, resolvedDate)
       .replace(/%%difficulty%%/g, p.difficulty)
       .replace(/%%group%%/g, p.group);
+    if (p.status.trim() !== "") {
+      content = content.replace(/(\r?\n)(status:\s*)[^\r\n]*/m, `$1$2${p.status.trim()}`);
+    } else {
+      content = content.replace(/\r?\nstatus:\s*[^\r\n]*/g, "");
+    }
     const enableDeadline = this.ctx.plugin.settings.enableDeadline ?? false;
     if (enableDeadline) {
       const deadlineVal = p.deadline ?? "";

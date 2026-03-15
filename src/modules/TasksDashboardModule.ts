@@ -9,7 +9,7 @@ import { Paths } from "../core/Paths";
 import { getIcon, getWeight, getConfig, getDropdownOptions, STATUS_CONFIG } from "../core/StatusConfig";
 import { UI_LABELS } from "../ui/Labels";
 import { createCollapsibleSection } from "../ui/CollapsibleSection";
-import { updateFrontmatter, appendLineToTaskDescriptionSection } from "../core/FileIO";
+import { updateFrontmatter, removeFrontmatterKey, appendLineToTaskDescriptionSection } from "../core/FileIO";
 
 const UNGROUPED_KEY = "Ungrouped";
 
@@ -170,9 +170,16 @@ export class TasksDashboardModule {
     this.scheduleRefresh();
   };
 
+  /** Файл считается заметкой-задачей, если во frontmatter есть status, project или group (задачи без статуса тоже учитываются). */
+  private isTaskNote(cache: { frontmatter?: Record<string, unknown> } | null): boolean {
+    const fm = cache?.frontmatter;
+    if (!fm) return false;
+    return fm.status != null || fm.project != null || fm.group != null;
+  }
+
   private isTaskRelevantFile(file: import("obsidian").TFile): boolean {
     const cache = this.ctx.app.metadataCache.getFileCache(file);
-    if (cache?.frontmatter?.status != null) return true;
+    if (this.isTaskNote(cache)) return true;
     const path = file.path;
     const dailyPrefix = Paths.DAILY_FOLDER.replace(/\/?$/, "") + "/";
     const templatesPrefix = Paths.TEMPLATES_FOLDER.replace(/\/?$/, "") + "/";
@@ -262,7 +269,7 @@ export class TasksDashboardModule {
       if (f.path.includes(templates) || f.path.includes(trash) || f.path.includes(archive))
         return false;
       const cache = app.metadataCache.getFileCache(f);
-      return cache?.frontmatter?.status != null;
+      return this.isTaskNote(cache);
     });
 
     const rawData: TaskRow[] = [];
@@ -271,7 +278,8 @@ export class TasksDashboardModule {
       const fm = cache?.frontmatter ?? {};
       let status = fm.status;
       if (Array.isArray(status)) status = status[0];
-      if (!status) status = UI_LABELS.tasks.defaultStatus;
+      if (status == null || (typeof status === "string" && status.trim() === "")) status = "";
+      else status = String(status);
 
       const taskName = file.basename.trim().toLowerCase();
       let eventDates = taskDateMap.get(taskName) ?? [];
@@ -315,7 +323,7 @@ export class TasksDashboardModule {
       rawData.push({
         path: file.path,
         name: file.basename,
-        status: String(status),
+        status: status === "" ? "" : String(status),
         context: String(context ?? ""),
         environment: String(environment ?? ""),
         executionTime,
@@ -404,8 +412,11 @@ export class TasksDashboardModule {
     for (const t of tasks) {
       const s = (t.status ?? "").toLowerCase();
       const conf = getConfig(s);
-      const key = conf ? conf.key : s;
+      const key = s === "" ? "" : (conf ? conf.key : s);
       counts[key] = (counts[key] ?? 0) + 1;
+    }
+    if (counts[""] > 0) {
+      container.createEl("span", { cls: "pv-summary-item", text: `— ${counts[""]}` });
     }
     const displayed = new Set<string>();
     for (const conf of STATUS_CONFIG) {
@@ -463,7 +474,9 @@ export class TasksDashboardModule {
 
       const tocContainer = body.createEl("div", { cls: "pv-toc-container" });
       for (const [groupName, tasks] of groupsArray) {
-        const displayName = isHome ? groupName : (groupName === UNGROUPED_KEY ? (labels.ungrouped ?? "Задачи без группы") : groupName);
+        const displayName = isHome
+          ? (groupName === "" ? "-" : groupName)
+          : (groupName === UNGROUPED_KEY ? (labels.ungrouped ?? "Задачи без группы") : groupName);
         const displayIcon = isHome ? getIcon(groupName) : "📝";
         const btn = tocContainer.createEl("div", { cls: "pv-toc-btn" });
         btn.innerHTML = `${displayIcon} ${displayName} <span class="pv-toc-count">&nbsp;(${tasks.length})</span>`;
@@ -507,7 +520,9 @@ export class TasksDashboardModule {
         const [groupName, tasks] = groupsArray[i];
         const collapsed = this.getGroupState(viewKey, groupName);
         const tbody = table.createEl("tbody", { cls: collapsed ? "pv-collapsed" : undefined });
-        const displayName = isHome ? groupName : (groupName === UNGROUPED_KEY ? (labels.ungrouped ?? "Задачи без группы") : groupName);
+        const displayName = isHome
+          ? (groupName === "" ? "-" : groupName)
+          : (groupName === UNGROUPED_KEY ? (labels.ungrouped ?? "Задачи без группы") : groupName);
         const displayIcon = isHome ? getIcon(groupName) : "📝";
 
         const colSpan = totalCols;
@@ -538,28 +553,40 @@ export class TasksDashboardModule {
           const select = tr.createEl("td", { cls: "pv-task-cell" }).createEl("select", {
             cls: "pv-status-select ui-select",
           });
+          select.createEl("option", { value: "", text: "-" });
           for (const opt of opts) {
             const o = select.createEl("option", { value: opt.value, text: opt.label });
-            if ((task.status || "").toLowerCase().includes(opt.value.toLowerCase())) o.selected = true;
+            if (task.status && (task.status || "").toLowerCase().includes(opt.value.toLowerCase())) o.selected = true;
           }
+          if (!task.status) select.value = "";
           select.addEventListener("click", (e) => e.stopPropagation());
           select.addEventListener("change", async (e) => {
             const selectEl = e.target as HTMLSelectElement;
             const newStatus = selectEl.value;
             const oldStatus = task.status;
+            const displayOld = oldStatus || "-";
+            const displayNew = newStatus || "-";
 
             if (this.ctx.plugin.settings.enableStatusChangeComment) {
               selectEl.value = oldStatus;
-              const comment = await this.openStatusChangeCommentModal(oldStatus, newStatus);
+              const comment = await this.openStatusChangeCommentModal(displayOld, displayNew);
               if (comment === null) return;
-              await updateFrontmatter(this.ctx.app, task.path, "status", newStatus);
+              if (newStatus === "") {
+                await removeFrontmatterKey(this.ctx.app, task.path, "status");
+              } else {
+                await updateFrontmatter(this.ctx.app, task.path, "status", newStatus);
+              }
               const dateStr = formatDate(new Date());
               const lineText = comment.trim()
-                ? `${dateStr}: ${comment.trim()} (${oldStatus} → ${newStatus})`
-                : `${dateStr}: ${oldStatus} → ${newStatus}`;
+                ? `${dateStr}: ${comment.trim()} (${displayOld} → ${displayNew})`
+                : `${dateStr}: ${displayOld} → ${displayNew}`;
               await appendLineToTaskDescriptionSection(this.ctx.app, task.path, lineText);
             } else {
-              await updateFrontmatter(this.ctx.app, task.path, "status", newStatus);
+              if (newStatus === "") {
+                await removeFrontmatterKey(this.ctx.app, task.path, "status");
+              } else {
+                await updateFrontmatter(this.ctx.app, task.path, "status", newStatus);
+              }
             }
             if (newStatus === "Готово") {
               this.ctx.eventBus.emit("task:completed", { path: task.path, difficulty: task.difficulty ?? null });

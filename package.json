@@ -1,6 +1,6 @@
 {
   "name": "obsidian-project-automation",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Obsidian Project Automation: шаблоны и скрипты для автоматизации проектов и задач",
   "main": "main.js",
   "scripts": {
