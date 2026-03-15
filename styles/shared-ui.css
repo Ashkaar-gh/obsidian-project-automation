@@ -265,7 +265,7 @@
 
 /* Модалка «Создать задачу»: фиксированная ширина, прокрутка, поле шаблона не обрезается */
 .opa-create-task-modal {
-    width: 520px !important;
+    width: 620px !important;
     max-width: 92vw;
     max-height: 88vh;
     box-sizing: border-box;
@@ -277,6 +277,7 @@
     overflow-y: auto;
     overflow-x: visible;
     box-sizing: border-box;
+    padding-top: 10px;
     padding-right: 10px;
     padding-bottom: 14px;
 }
@@ -299,12 +300,12 @@
     max-width: 100% !important;
     display: flex !important;
     gap: 12px;
-    padding: 6px 0;
+    padding: 6px 0 !important;
 }
 .opa-create-task-modal .setting-item-info {
     flex: 0 0 auto;
-    min-width: 100px;
-    max-width: 120px;
+    min-width: 160px;
+    max-width: 200px;
 }
 /* Правая колонка: занимает оставшееся место, одна ширина у всех полей */
 .opa-create-task-modal .setting-item-control {
@@ -367,10 +368,6 @@
     border: none;
     border-top: 1px solid var(--background-modifier-border);
     margin: 0;
-}
-/* Первая строка кастомного блока: верхний отступ 5px (итого с линией и padding Группа = 12px) */
-.opa-create-task-modal .opa-create-task-custom-fields .setting-item:first-child {
-    padding-top: 5px;
 }
 .opa-create-task-modal .opa-create-task-custom-fields .setting-item {
     margin-top: 0;
@@ -563,6 +560,12 @@
     justify-content: flex-end;
     margin-top: 12px;
     width: fit-content;
+}
+
+/* Выделение активного поля (день / месяц / год) при фокусе */
+.opa-daily-heading-date-modal .opa-daily-heading-date-steppers .gamification-stepper-group:focus {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 2px;
 }
 
 /* Узкое поле «За сколько дней напоминать» в настройках. */

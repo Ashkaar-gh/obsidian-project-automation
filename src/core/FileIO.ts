@@ -26,6 +26,15 @@ export async function updateFrontmatter(
   });
 }
 
+/** Удалить поле из frontmatter. */
+export async function removeFrontmatterKey(app: App, filePath: string, key: string): Promise<void> {
+  const tFile = app.vault.getAbstractFileByPath(filePath);
+  if (!tFile || !(tFile instanceof TFile)) return;
+  await app.fileManager.processFrontMatter(tFile, (frontmatter) => {
+    delete frontmatter[key];
+  });
+}
+
 /** Прочитать содержимое файла. */
 export async function read(app: App, filePath: string): Promise<string | null> {
   const path = pathFrom(filePath);

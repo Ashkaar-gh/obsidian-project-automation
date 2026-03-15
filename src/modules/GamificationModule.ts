@@ -345,11 +345,13 @@ export class GamificationModule {
     const monthWrap = modal.contentEl.createEl("div", { cls: "gamification-completed-month-wrap" });
     const monthGroup = monthWrap.createEl("div", { cls: "gamification-month-group" });
     const monthStepper = monthGroup.createEl("div", { cls: "gamification-stepper-group" });
+    monthStepper.tabIndex = 0;
     const monthPrev = monthStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "‹" });
     const monthValue = monthStepper.createEl("span", { cls: "gamification-stepper-value gamification-stepper-month" });
     const monthNext = monthStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "›" });
     const yearGroup = monthWrap.createEl("div", { cls: "gamification-month-group" });
     const yearStepper = yearGroup.createEl("div", { cls: "gamification-stepper-group" });
+    yearStepper.tabIndex = 0;
     const yearPrev = yearStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "‹" });
     const yearValue = yearStepper.createEl("span", { cls: "gamification-stepper-value" });
     const yearNext = yearStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "›" });
@@ -359,36 +361,34 @@ export class GamificationModule {
       yearValue.setText(String(selectedYear));
     };
 
-    monthPrev.addEventListener("click", () => {
-      if (selectedMonth === "01") {
-        selectedMonth = "12";
-        if (selectedYear > yearMin) selectedYear--;
-      } else selectedMonth = String(parseInt(selectedMonth, 10) - 1).padStart(2, "0");
-      updateStepperLabels();
-      renderTasksForMonth();
-    });
-    monthNext.addEventListener("click", () => {
-      if (selectedMonth === "12") {
+    const doChangeMonth = (delta: number): void => {
+      const m = parseInt(selectedMonth, 10) + delta;
+      if (m > 12) {
         selectedMonth = "01";
         if (selectedYear < yearMax) selectedYear++;
-      } else selectedMonth = String(parseInt(selectedMonth, 10) + 1).padStart(2, "0");
+      } else if (m < 1) {
+        selectedMonth = "12";
+        if (selectedYear > yearMin) selectedYear--;
+      } else {
+        selectedMonth = String(m).padStart(2, "0");
+      }
       updateStepperLabels();
       renderTasksForMonth();
-    });
-    yearPrev.addEventListener("click", () => {
-      if (selectedYear > yearMin) {
-        selectedYear--;
-        updateStepperLabels();
-        renderTasksForMonth();
-      }
-    });
-    yearNext.addEventListener("click", () => {
-      if (selectedYear < yearMax) {
-        selectedYear++;
-        updateStepperLabels();
-        renderTasksForMonth();
-      }
-    });
+    };
+
+    const doChangeYear = (delta: number): void => {
+      selectedYear += delta;
+      if (selectedYear < yearMin) selectedYear = yearMin;
+      if (selectedYear > yearMax) selectedYear = yearMax;
+      updateStepperLabels();
+      renderTasksForMonth();
+    };
+
+    monthPrev.addEventListener("click", () => doChangeMonth(-1));
+    monthNext.addEventListener("click", () => doChangeMonth(1));
+    yearPrev.addEventListener("click", () => doChangeYear(-1));
+    yearNext.addEventListener("click", () => doChangeYear(1));
+
     const currentMonthBtn = monthWrap.createEl("button", {
       type: "button",
       cls: "gamification-stepper-current-btn",
@@ -400,6 +400,33 @@ export class GamificationModule {
       updateStepperLabels();
       renderTasksForMonth();
     });
+
+    const steppers = [monthStepper, yearStepper];
+    const keydownHandler = (e: KeyboardEvent): void => {
+      if (e.key === "Enter" && steppers.includes(document.activeElement as HTMLElement)) {
+        e.preventDefault();
+        modal.close();
+        return;
+      }
+      if (e.key === "Tab") {
+        const idx = steppers.indexOf(document.activeElement as HTMLElement);
+        if (idx >= 0) {
+          e.preventDefault();
+          const next = e.shiftKey ? (idx - 1 + 2) % 2 : (idx + 1) % 2;
+          steppers[next].focus();
+        }
+        return;
+      }
+      const focusedIdx = steppers.indexOf(document.activeElement as HTMLElement);
+      if (focusedIdx < 0) return;
+      const delta = e.key === "ArrowLeft" || e.key === "ArrowDown" ? -1 : e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : 0;
+      if (delta === 0) return;
+      e.preventDefault();
+      if (focusedIdx === 0) doChangeMonth(delta);
+      else doChangeYear(delta);
+    };
+    modal.contentEl.addEventListener("keydown", keydownHandler);
+    setTimeout(() => monthStepper.focus(), 0);
 
     updateStepperLabels();
     renderTasksForMonth();

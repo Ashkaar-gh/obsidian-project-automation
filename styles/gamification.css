@@ -130,6 +130,10 @@
     align-items: center;
     gap: 0.5rem;
 }
+.gamification-completed-modal .gamification-completed-month-wrap .gamification-stepper-group:focus {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 2px;
+}
 .gamification-month-group {
     display: inline-flex;
     align-items: center;
