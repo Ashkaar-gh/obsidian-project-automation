@@ -113,6 +113,9 @@ export class ActivitiesModule {
   private checkDayChange(): void {
     const now = getTodayKey();
     if (now !== this.lastTodayKey) {
+      if (this.selectedDateKey === this.lastTodayKey) {
+        this.selectedDateKey = now;
+      }
       this.lastTodayKey = now;
       this.runRefresh();
     }
