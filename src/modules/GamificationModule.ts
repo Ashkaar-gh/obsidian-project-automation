@@ -1,5 +1,4 @@
 import type { ModuleContext } from "./types";
-import { eventBus } from "../core/EventBus";
 import {
   getLevel,
   getXpForLevel,
@@ -12,6 +11,7 @@ import {
 } from "../core/GamificationState";
 import { UI_LABELS } from "../ui/Labels";
 import { createCollapsibleSection } from "../ui/CollapsibleSection";
+import { BlockRegistry } from "../ui/BlockRegistry";
 import { Modal, Notice, TFile } from "obsidian";
 
 /** Формат даты из frontmatter в DD-MM-YYYY (как на доске задач). */
@@ -44,17 +44,33 @@ function getDeadlineForTask(
 
 export class GamificationModule {
   private ctx: ModuleContext;
-  private blocks = new Set<{ el: HTMLElement; refresh: () => void }>();
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private registry: BlockRegistry;
   private offCompleted: (() => void) | null = null;
   private offUncompleted: (() => void) | null = null;
+  /** Пути обработанных задач для быстрой проверки (вместо линейного поиска по массиву). */
+  private processedPaths: Set<string> | null = null;
 
   constructor(ctx: ModuleContext) {
     this.ctx = ctx;
+    this.registry = new BlockRegistry({
+      app: ctx.app,
+      isEnabled: () => ctx.plugin.settings.enableGamification,
+      debounceMs: 500,
+      domSelector: ".opa-gamification-view",
+      createRefresh: (el) => () => this.render(el),
+    });
+  }
+
+  private async getProcessedPaths(state: GamificationState): Promise<Set<string>> {
+    if (!this.processedPaths) this.processedPaths = new Set(state.processedTaskPaths);
+    return this.processedPaths;
   }
 
   private onVaultModify = (file: import("obsidian").TAbstractFile): void => {
-    if (file.path === this.ctx.plugin.getGamificationDataPath()) this.scheduleRefresh();
+    if (file.path === this.ctx.plugin.getGamificationDataPath()) {
+      this.processedPaths = null;
+      this.scheduleRefresh();
+    }
   };
 
   load(): void {
@@ -62,14 +78,15 @@ export class GamificationModule {
       if (!this.ctx.plugin.settings.enableGamification) return;
       const state = await this.ctx.plugin.getGamificationState();
       const L = UI_LABELS.gamification;
+      const processed = await this.getProcessedPaths(state);
 
-      if (state.processedTaskPaths.includes(data.path)) {
+      if (processed.has(data.path)) {
         const existingTask = state.processedTasks.find((t) => t.path === data.path);
         if (existingTask) {
           existingTask.rewardMessage = L.rewardsReceived;
           existingTask.completedAt = new Date().toISOString();
           this.ctx.plugin.scheduleGamificationSave();
-          setTimeout(() => this.runRefresh(), 50);
+          this.registry.runRefresh();
         }
         return;
       }
@@ -78,6 +95,7 @@ export class GamificationModule {
       state.xp += reward.xp;
       state.gold += reward.gold;
       state.processedTaskPaths.push(data.path);
+      processed.add(data.path);
       const taskName = data.path.split("/").pop()?.replace(/\.md$/i, "") ?? data.path;
       let deadline: string | undefined;
       const file = this.ctx.app.vault.getAbstractFileByPath(data.path);
@@ -101,92 +119,56 @@ export class GamificationModule {
       });
       this.ctx.plugin.scheduleGamificationSave();
       new Notice(L.rewardLine(reward.xp, reward.gold));
-      setTimeout(() => this.runRefresh(), 50);
+      this.registry.runRefresh();
     });
 
     this.offUncompleted = this.ctx.eventBus.on("task:uncompleted", async (data) => {
       if (!this.ctx.plugin.settings.enableGamification) return;
       const state = await this.ctx.plugin.getGamificationState();
       const L = UI_LABELS.gamification;
-      if (state.processedTaskPaths.includes(data.path)) {
+      const processed = await this.getProcessedPaths(state);
+      if (processed.has(data.path)) {
         const existingTask = state.processedTasks.find((t) => t.path === data.path);
         if (existingTask) {
           existingTask.rewardMessage = L.returnedToWork;
           this.ctx.plugin.scheduleGamificationSave();
-          setTimeout(() => this.runRefresh(), 50);
+          this.registry.runRefresh();
         }
       }
     });
 
-    this.ctx.app.vault.on("modify", this.onVaultModify);
-    this.ctx.app.workspace.on("active-leaf-change", this.scheduleRefresh);
+    this.ctx.plugin.registerEvent(this.ctx.app.vault.on("modify", this.onVaultModify));
+    this.ctx.plugin.registerEvent(this.ctx.app.workspace.on("active-leaf-change", this.registry.scheduleRefresh));
 
     this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-gamification-view", (_source, el) => {
       el.addClass("opa-gamification-view");
-      this.blocks.forEach((b) => { if (b.el === el) this.blocks.delete(b); });
-      const refresh = () => this.render(el);
-      this.blocks.add({ el, refresh });
-      this.render(el);
+      this.registry.register(el, () => this.render(el));
     });
   }
 
-  /** Есть ли хотя бы один блок геймификации в активной вкладке. */
-  private isAnyBlockVisible(): boolean {
-    const container = this.ctx.app.workspace.activeLeaf?.view?.containerEl;
-    if (!container) return false;
-    for (const b of this.blocks) {
-      if (b.el.isConnected && container.contains(b.el)) return true;
-    }
-    return false;
-  }
-
-  /** Обновить все открытые блоки (в т.ч. на фоновых вкладках). */
-  private runRefresh(): void {
-    this.blocks.forEach((b) => b.refresh());
-
-    if (this.blocks.size > 30) {
-      const stale = Array.from(this.blocks).filter((b) => !b.el.isConnected);
-      for (let i = 0; i < stale.length - 10; i++) {
-        this.blocks.delete(stale[i]);
-      }
-    }
-  }
-
   private scheduleRefresh = (): void => {
-    if (!this.ctx.plugin.settings.enableGamification) return;
-    if (!this.isAnyBlockVisible()) return;
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => {
-      this.debounceTimer = null;
-      this.runRefresh();
-    }, 500);
+    this.registry.scheduleRefresh();
   };
 
   unload(): void {
     this.offCompleted?.();
     this.offUncompleted?.();
-    this.ctx.app.vault.off("modify", this.onVaultModify);
-    this.ctx.app.workspace.off("active-leaf-change", this.scheduleRefresh);
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.blocks.clear();
+    this.registry.clear();
   }
 
   updateState(): void {
-    setTimeout(() => this.runRefresh(), 50);
+    this.registry.runRefresh();
   }
 
   private async render(container: HTMLElement): Promise<void> {
     if (!this.ctx.plugin.settings.enableGamification) {
       container.empty();
-      container.style.display = "none";
+      container.addClass("opa-hidden");
       return;
     }
-    container.style.display = "";
+    container.removeClass("opa-hidden");
 
-    const scrollableParent = container.closest(".cm-scroller, .markdown-reading-view, .markdown-preview-view") as HTMLElement | null;
-    const scrollTop = scrollableParent?.scrollTop ?? 0;
-
-    const L = (UI_LABELS as { gamification?: { levelLabel?: string; shopTitle?: string } }).gamification;
+    const L = UI_LABELS.gamification;
 
     try {
       let state: GamificationState;
@@ -235,8 +217,7 @@ export class GamificationModule {
 
       const shopWrap = wrap.createEl("div", { cls: "gamification-shop" });
       const shopBody = createCollapsibleSection(shopWrap, L.shopTitle, "gamification-shop", { useTextArrow: true });
-      const shopTabs = shopBody.createEl("div", { cls: "gamification-buttons-row" });
-      shopTabs.style.marginTop = "0.5rem";
+      const shopTabs = shopBody.createEl("div", { cls: "gamification-buttons-row gamification-shop-tabs" });
       const btnManage = shopTabs.createEl("button", { text: L.management, cls: "view-btn" });
       btnManage.addEventListener("click", () => this.openShopManageModal(state));
       const btnPurchased = shopTabs.createEl("button", { text: L.purchased, cls: "view-btn" });
@@ -255,16 +236,10 @@ export class GamificationModule {
           tr.createEl("td", { text: `${item.cost} ${L.gold}`, cls: "gamification-shop-cost" });
           const act = tr.createEl("td", { cls: "gamification-shop-action" });
           const buyBtn = act.createEl("button", { text: L.buy, cls: "view-btn gamification-shop-btn" });
-          buyBtn.addEventListener("click", () => this.buyShopItem(item, state));
+          buyBtn.addEventListener("click", () => this.buyShopItem(item));
         }
       }
 
-      if (scrollableParent?.isConnected) {
-        scrollableParent.scrollTop = scrollTop;
-        setTimeout(() => {
-          if (scrollableParent.isConnected) scrollableParent.scrollTop = scrollTop;
-        }, 0);
-      }
     } catch (e) {
       container.empty();
       container.createEl("p", { text: "Ошибка геймификации", cls: "view-error" });
@@ -403,13 +378,13 @@ export class GamificationModule {
 
     const steppers = [monthStepper, yearStepper];
     const keydownHandler = (e: KeyboardEvent): void => {
-      if (e.key === "Enter" && steppers.includes(document.activeElement as HTMLElement)) {
+      if (e.key === "Enter" && steppers.includes(document.activeElement as typeof steppers[number])) {
         e.preventDefault();
         modal.close();
         return;
       }
       if (e.key === "Tab") {
-        const idx = steppers.indexOf(document.activeElement as HTMLElement);
+        const idx = steppers.indexOf(document.activeElement as typeof steppers[number]);
         if (idx >= 0) {
           e.preventDefault();
           const next = e.shiftKey ? (idx - 1 + 2) % 2 : (idx + 1) % 2;
@@ -417,7 +392,7 @@ export class GamificationModule {
         }
         return;
       }
-      const focusedIdx = steppers.indexOf(document.activeElement as HTMLElement);
+      const focusedIdx = steppers.indexOf(document.activeElement as typeof steppers[number]);
       if (focusedIdx < 0) return;
       const delta = e.key === "ArrowLeft" || e.key === "ArrowDown" ? -1 : e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : 0;
       if (delta === 0) return;
@@ -573,12 +548,12 @@ export class GamificationModule {
     modal.open();
   }
 
-  private async buyShopItem(
-    item: { name: string; cost: number; description?: string },
-    state: GamificationState
-  ): Promise<void> {
+  private async buyShopItem(item: { name: string; cost: number; description?: string }): Promise<void> {
     const current = await this.ctx.plugin.getGamificationState();
-    if (current.gold < item.cost) return;
+    if (current.gold < item.cost) {
+      new Notice("Недостаточно золота");
+      return;
+    }
     current.gold -= item.cost;
     current.purchaseHistory = [
       ...current.purchaseHistory,

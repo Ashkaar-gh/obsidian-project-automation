@@ -44,7 +44,7 @@ export async function read(app: App, filePath: string): Promise<string | null> {
   return await app.vault.cachedRead(file);
 }
 
-/** Атомарная замена содержимого файла (vault.process). */
+/** Замена содержимого файла целиком. */
 export async function modify(app: App, filePath: string, newContent: string): Promise<boolean> {
   const path = pathFrom(filePath);
   if (!path) return false;
@@ -120,38 +120,67 @@ export async function appendLineToTaskDescriptionSection(
 }
 
 /**
- * Атомарная замена тела секции под заголовком: ищет заголовок по строке headingLine,
- * граница секции — следующий заголовок того же или более высокого уровня (не подзаголовки).
+ * Границы секции под заголовком headingLine: конец — следующий заголовок
+ * того же или более высокого уровня (не подзаголовки). null, если заголовок не найден.
  */
-export async function replaceSectionByHeading(
+export function findSectionBounds(
+  lines: string[],
+  headingLine: string
+): { startIdx: number; endIdx: number } | null {
+  const headingTrimmed = headingLine.trim();
+  const sectionLevel = headingTrimmed.match(HEADING_LINE_REGEX)?.[1].length ?? 6;
+  const startIdx = lines.findIndex((l) => l.trim() === headingTrimmed);
+  if (startIdx === -1) return null;
+  let endIdx = lines.length;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const m = lines[i].match(HEADING_LINE_REGEX);
+    if (m && m[1].length <= sectionLevel) {
+      endIdx = i;
+      break;
+    }
+  }
+  return { startIdx, endIdx };
+}
+
+/**
+ * Атомарное преобразование тела секции под заголовком (vault.process).
+ * transform получает текущее тело и возвращает новое (null — не менять).
+ * Возвращает true, если заголовок найден.
+ */
+export async function processSectionByHeading(
+  app: App,
+  file: TFile,
+  headingLine: string,
+  transform: (body: string) => string | null
+): Promise<boolean> {
+  let found = false;
+  await processFile(app, file, (data) => {
+    const lines = data.split("\n");
+    const bounds = findSectionBounds(lines, headingLine);
+    if (!bounds) return data;
+    found = true;
+    const body = lines.slice(bounds.startIdx + 1, bounds.endIdx).join("\n");
+    const newBody = transform(body);
+    if (newBody == null || newBody === body) return data;
+    const before = lines.slice(0, bounds.startIdx + 1).join("\n");
+    const after = lines.slice(bounds.endIdx).join("\n");
+    return `${before}\n${newBody}\n${after}`;
+  });
+  return found;
+}
+
+/**
+ * Атомарная замена тела секции под заголовком (нормализует пустые строки по краям).
+ */
+export function replaceSectionByHeading(
   app: App,
   file: TFile,
   headingLine: string,
   newContent: string
 ): Promise<boolean> {
-  const headingTrimmed = headingLine.trim();
-  const sectionLevelMatch = headingTrimmed.match(HEADING_LINE_REGEX);
-  const sectionLevel = sectionLevelMatch ? sectionLevelMatch[1].length : 6;
-
-  return processFile(app, file, (data) => {
-    const lines = data.split("\n");
-    const startIdx = lines.findIndex((l) => l.trim() === headingTrimmed);
-    if (startIdx === -1) return data;
-
-    let endIdx = lines.length;
-    for (let i = startIdx + 1; i < lines.length; i++) {
-      const m = lines[i].match(HEADING_LINE_REGEX);
-      if (m && m[1].length <= sectionLevel) {
-        endIdx = i;
-        break;
-      }
-    }
-
-    const before = lines.slice(0, startIdx + 1).join("\n");
-    const after = lines.slice(endIdx).join("\n");
-    const body = (newContent ?? "").replace(/\n+$/, "").replace(/^\n+/, "");
-    return `${before}\n${body}\n${after}`;
-  });
+  return processSectionByHeading(app, file, headingLine, () =>
+    (newContent ?? "").replace(/\n+$/, "").replace(/^\n+/, "")
+  );
 }
 
 /** Нормализация пробелов для сравнения строк. */

@@ -3,12 +3,20 @@
  * Группировка по group, сводка по статусам, TOC, сворачиваемые группы, смена статуса в таблице.
  */
 
-import { Modal } from "obsidian";
+import { Modal, type TFile } from "obsidian";
 import type { ModuleContext } from "./types";
 import { Paths } from "../core/Paths";
-import { getIcon, getWeight, getConfig, getDropdownOptions, STATUS_CONFIG } from "../core/StatusConfig";
+import {
+  getIcon,
+  getWeight,
+  getConfig,
+  getDropdownOptions,
+  STATUS_CONFIG,
+  EMPTY_STATUS_ICON,
+} from "../core/StatusConfig";
 import { UI_LABELS } from "../ui/Labels";
 import { createCollapsibleSection } from "../ui/CollapsibleSection";
+import { BlockRegistry } from "../ui/BlockRegistry";
 import { updateFrontmatter, removeFrontmatterKey, appendLineToTaskDescriptionSection } from "../core/FileIO";
 
 const UNGROUPED_KEY = "Ungrouped";
@@ -66,51 +74,58 @@ function parseDateFromFrontmatter(value: unknown): Date | null {
 
 /** Версия рендера по контейнеру: только последний завершённый рендер обновляет DOM. */
 const projectsListRenderVersion = new WeakMap<HTMLElement, number>();
+const homeRenderVersion = new WeakMap<HTMLElement, number>();
 
 export class TasksDashboardModule {
   private ctx: ModuleContext;
-  private debounceMs: number;
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private blocks = new Set<{ el: HTMLElement; refresh: () => void | Promise<void> }>();
+  private registry: BlockRegistry;
   private unsubscribeIndex: (() => void) | null = null;
+  /** Общий кэш строк задач на один цикл refresh — без N полных сканов vault. */
+  private rowsCache: TaskRow[] | null = null;
 
   constructor(ctx: ModuleContext, debounceMs: number) {
     this.ctx = ctx;
-    this.debounceMs = debounceMs;
+    this.registry = new BlockRegistry({
+      app: ctx.app,
+      isEnabled: () =>
+        ctx.plugin.settings.enableTasksDashboard && ctx.plugin.settings.enablePluginRefresh,
+      debounceMs,
+      beforeRefresh: async () => {
+        this.rowsCache = await this.getRawTaskRows();
+      },
+    });
   }
 
   load(): void {
     this.unsubscribeIndex = this.ctx.eventBus.on("index:updated", this.onStorageChange);
-    this.ctx.app.metadataCache.on("changed", this.onMetadataChanged);
-    this.ctx.app.vault.on("create", this.onStorageChange);
-    this.ctx.app.vault.on("rename", this.onStorageChange);
-    this.ctx.app.vault.on("delete", this.onStorageChange);
-    this.ctx.app.workspace.on("active-leaf-change", this.onLeafChange);
+    this.ctx.plugin.registerEvent(this.ctx.app.metadataCache.on("changed", this.onMetadataChanged));
+    this.ctx.plugin.registerEvent(this.ctx.app.workspace.on("active-leaf-change", this.onLeafChange));
+    // create/rename/delete — только после layoutReady, иначе при старте vault эмитит create
+    // на каждый файл и доска бесконечно рефрешится → зависания.
+    this.ctx.app.workspace.onLayoutReady(() => {
+      const vault = this.ctx.app.vault as unknown as {
+        on(e: string, cb: (...args: unknown[]) => void): import("obsidian").EventRef;
+      };
+      this.ctx.plugin.registerEvent(vault.on("create", this.onStorageChange));
+      this.ctx.plugin.registerEvent(vault.on("rename", this.onStorageChange));
+      this.ctx.plugin.registerEvent(vault.on("delete", this.onStorageChange));
+    });
 
     this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-home-view", (_source, el) => {
       el.addClass("opa-home-view");
-      this.blocks.forEach((b) => { if (b.el === el) this.blocks.delete(b); });
-      const refresh = () => this.render(el, null);
-      this.blocks.add({ el, refresh });
-      this.render(el, null);
+      this.registry.register(el, () => this.render(el, null));
     });
     this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-project-view", (_source, el, ctx) => {
       el.addClass("opa-project-view");
-      this.blocks.forEach((b) => { if (b.el === el) this.blocks.delete(b); });
       const projectFilter = ctx.sourcePath
         ? this.ctx.app.vault.getAbstractFileByPath(ctx.sourcePath)?.name?.replace(/\.md$/i, "") ?? null
         : null;
       const excludePath = ctx.sourcePath ?? null;
-      const refresh = () => this.render(el, projectFilter, excludePath);
-      this.blocks.add({ el, refresh });
-      this.render(el, projectFilter, excludePath);
+      this.registry.register(el, () => this.render(el, projectFilter, excludePath));
     });
     this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-projects-view", (_source, el) => {
       el.addClass("opa-projects-view");
-      this.blocks.forEach((b) => { if (b.el === el) this.blocks.delete(b); });
-      const refresh = () => this.renderProjectsList(el);
-      this.blocks.add({ el, refresh });
-      this.renderProjectsList(el);
+      this.registry.register(el, () => this.renderProjectsList(el));
     });
   }
 
@@ -132,10 +147,10 @@ export class TasksDashboardModule {
 
       container.empty();
       if (!this.ctx.plugin.settings.enableTasksDashboard) {
-        container.style.display = "none";
+        container.addClass("opa-hidden");
         return;
       }
-      container.style.display = "";
+      container.removeClass("opa-hidden");
 
       const wrap = container.createDiv({ cls: "opa-projects-view-wrap" });
       const body = createCollapsibleSection(wrap, "Проекты", "projects");
@@ -144,7 +159,6 @@ export class TasksDashboardModule {
         body.createEl("p", {
           text: "—",
           cls: "opa-projects-empty",
-          attr: { style: "color: var(--text-faint); margin: 0 0 10px 10px;" },
         });
         return;
       }
@@ -170,107 +184,97 @@ export class TasksDashboardModule {
     this.scheduleRefresh();
   };
 
-  /** Файл считается заметкой-задачей, если во frontmatter есть status, project или group (задачи без статуса тоже учитываются). */
-  private isTaskNote(cache: { frontmatter?: Record<string, unknown> } | null): boolean {
+  /** Значения project из frontmatter в плоский список непустых строк. */
+  private flattenProjectField(project: unknown): string[] {
+    if (project == null) return [];
+    if (Array.isArray(project)) return project.flatMap((p) => this.flattenProjectField(p));
+    const s = String(project).trim();
+    return s ? [s] : [];
+  }
+
+  /**
+   * Корневая заметка проекта (шаблон project.md): project совпадает с именем файла.
+   * Такие файлы не должны попадать в доску как задачи.
+   */
+  private isProjectHubPage(file: TFile, fm: Record<string, unknown>): boolean {
+    const base = file.basename;
+    for (const v of this.flattenProjectField(fm.project)) {
+      const segment = v.replace(/\.md$/i, "").split("/").pop()?.trim() ?? "";
+      if (segment === base) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Заметка-задача: во frontmatter есть status, project или group.
+   * Корневая страница проекта (project совпадает с именем файла) не считается задачей.
+   */
+  private isTaskNote(file: TFile, cache: { frontmatter?: Record<string, unknown> } | null): boolean {
     const fm = cache?.frontmatter;
     if (!fm) return false;
+    if (this.isProjectHubPage(file, fm)) return false;
     return fm.status != null || fm.project != null || fm.group != null;
   }
 
   private isTaskRelevantFile(file: import("obsidian").TFile): boolean {
     const cache = this.ctx.app.metadataCache.getFileCache(file);
-    if (this.isTaskNote(cache)) return true;
+    if (this.isTaskNote(file, cache)) return true;
     const path = file.path;
     const dailyPrefix = Paths.DAILY_FOLDER.replace(/\/?$/, "") + "/";
     const templatesPrefix = Paths.TEMPLATES_FOLDER.replace(/\/?$/, "") + "/";
     return path.startsWith(dailyPrefix) || path.startsWith(templatesPrefix);
   }
 
-  /** Есть ли хотя бы один наш блок во вкладке, которая сейчас активна. */
-  private isAnyBlockVisible(): boolean {
-    const container = this.ctx.app.workspace.activeLeaf?.view?.containerEl;
-    if (!container) return false;
-    for (const b of this.blocks) {
-      if (b.el.isConnected && container.contains(b.el)) return true;
-    }
-    return false;
-  }
-
   /** При переключении вкладки — запускаем рефреш. */
   private onLeafChange = (): void => {
     if (!this.ctx.plugin.settings.enablePluginRefresh) return;
+    const activeFile = this.ctx.app.workspace.getActiveFile();
+    const dailyPrefix = Paths.DAILY_FOLDER.replace(/\/?$/, "") + "/";
+    if (activeFile?.path.startsWith(dailyPrefix)) return;
     this.scheduleRefresh();
   };
 
   unload(): void {
     if (this.unsubscribeIndex) this.unsubscribeIndex();
     this.unsubscribeIndex = null;
-    this.ctx.app.metadataCache.off("changed", this.onMetadataChanged);
-    this.ctx.app.vault.off("create", this.onStorageChange);
-    this.ctx.app.vault.off("rename", this.onStorageChange);
-    this.ctx.app.vault.off("delete", this.onStorageChange);
-    this.ctx.app.workspace.off("active-leaf-change", this.onLeafChange);
-    this.blocks.clear();
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    this.registry.clear();
+    this.rowsCache = null;
   }
 
   /** Публичный вызов для отложенного рефреша. Обновляются все открытые блоки, в т.ч. на фоновых вкладках. */
   scheduleRefresh(): void {
-    if (!this.ctx.plugin.settings.enableTasksDashboard || !this.ctx.plugin.settings.enablePluginRefresh) return;
-    if (!this.isAnyBlockVisible()) return;
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => {
-      this.debounceTimer = null;
-      this.runRefresh();
-    }, this.debounceMs);
+    this.rowsCache = null;
+    this.registry.scheduleRefresh();
   }
 
   updateState(): void {
-    this.forceRefresh();
+    void this.forceRefresh();
   }
 
-  /** Принудительное обновление (например после создания задачи). Ждёт завершения рендера перед переключением вкладки. */
+  /** Принудительное обновление (например после создания задачи). Ждёт завершения рендера. */
   async forceRefresh(): Promise<void> {
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    await this.runRefresh();
-  }
-
-  /** Обновить все блоки (в т.ч. на фоновых вкладках). Мягкая очистка отключённых только при переполнении. */
-  private async runRefresh(): Promise<void> {
-    const promises: Promise<void>[] = [];
-    this.blocks.forEach((b) => {
-      const r = b.refresh();
-      if (r instanceof Promise) promises.push(r);
-    });
-    await Promise.all(promises);
-
-    if (this.blocks.size > 30) {
-      const staleBlocks = Array.from(this.blocks).filter((b) => !b.el.isConnected);
-      for (let i = 0; i < staleBlocks.length - 10; i++) {
-        this.blocks.delete(staleBlocks[i]);
-      }
-    }
+    this.rowsCache = null;
+    await this.registry.forceRefreshAsync();
   }
 
   /** Сырой список задач по хранилищу (без фильтра по проекту и без группировки). */
   private async getRawTaskRows(): Promise<TaskRow[]> {
     const { app, taskIndex } = this.ctx;
     taskIndex.ensureSubscribed();
-    const taskDateMap = taskIndex.getMap();
 
-    const templates = Paths.TEMPLATES_FOLDER;
+    const templatesPrefix = Paths.TEMPLATES_FOLDER.replace(/\/?$/, "") + "/";
     const trash = Paths.TRASH_FILE;
-    const archive = Paths.ARCHIVE_FOLDER;
+    const archivePrefix = Paths.ARCHIVE_FOLDER.replace(/\/?$/, "") + "/";
 
     const files = app.vault.getMarkdownFiles().filter((f) => {
-      if (f.path.includes(templates) || f.path.includes(trash) || f.path.includes(archive))
+      if (f.path.startsWith(templatesPrefix) || f.path === trash || f.path.startsWith(archivePrefix))
         return false;
       const cache = app.metadataCache.getFileCache(f);
-      return this.isTaskNote(cache);
+      return this.isTaskNote(f, cache);
     });
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
 
     const rawData: TaskRow[] = [];
     for (const file of files) {
@@ -281,8 +285,8 @@ export class TasksDashboardModule {
       if (status == null || (typeof status === "string" && status.trim() === "")) status = "";
       else status = String(status);
 
-      const taskName = file.basename.trim().toLowerCase();
-      let eventDates = taskDateMap.get(taskName) ?? [];
+      const taskName = file.basename.replace(/\s+/g, " ").trim().toLowerCase();
+      let eventDates = taskIndex.getDatesForTask(taskName);
       if (!eventDates.length && fm.date != null) {
         const d = parseDateFromFrontmatter(fm.date);
         if (d) eventDates = [d];
@@ -294,8 +298,6 @@ export class TasksDashboardModule {
       const deadlineRaw = fm.deadline;
       const deadlineDate = parseDateFromFrontmatter(deadlineRaw);
       const deadline = deadlineDate ? formatDate(deadlineDate) : "";
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
       const statusLower = String(status).toLowerCase();
       const isDeadlineOverdue =
         deadlineDate != null &&
@@ -357,7 +359,7 @@ export class TasksDashboardModule {
     projectFilter: string | null = null,
     excludePath: string | null = null
   ): Promise<Map<string, TaskRow[]>> {
-    const rawData = await this.getRawTaskRows();
+    const rawData = this.rowsCache ?? (await this.getRawTaskRows());
     let filtered = rawData;
     if (projectFilter != null && projectFilter.trim() !== "") {
       const key = projectFilter.toLowerCase().trim();
@@ -399,10 +401,7 @@ export class TasksDashboardModule {
 
   private openStatusChangeCommentModal(oldStatus: string, newStatus: string): Promise<string | null> {
     return new Promise((resolve) => {
-      const modal = new StatusChangeCommentModal(this.ctx.app, oldStatus, newStatus, (value) => {
-        modal.close();
-        resolve(value);
-      });
+      const modal = new StatusChangeCommentModal(this.ctx.app, oldStatus, newStatus, resolve);
       modal.open();
     });
   }
@@ -416,7 +415,10 @@ export class TasksDashboardModule {
       counts[key] = (counts[key] ?? 0) + 1;
     }
     if (counts[""] > 0) {
-      container.createEl("span", { cls: "pv-summary-item", text: `— ${counts[""]}` });
+      container.createEl("span", {
+        cls: "pv-summary-item",
+        text: `${EMPTY_STATUS_ICON} ${counts[""]}`,
+      });
     }
     const displayed = new Set<string>();
     for (const conf of STATUS_CONFIG) {
@@ -434,16 +436,17 @@ export class TasksDashboardModule {
   ): Promise<void> {
     if (!this.ctx.plugin.settings.enableTasksDashboard) {
       container.empty();
-      container.style.display = "none";
+      container.addClass("opa-hidden");
       return;
     }
-    container.style.display = "";
+    container.removeClass("opa-hidden");
 
-    const scrollableParent = container.closest(".cm-scroller, .markdown-reading-view, .markdown-preview-view") as HTMLElement | null;
-    const scrollTop = scrollableParent?.scrollTop ?? 0;
+    const version = (homeRenderVersion.get(container) ?? 0) + 1;
+    homeRenderVersion.set(container, version);
 
     try {
       const groupedData = await this.getTableData(projectFilter, excludePath);
+      if (homeRenderVersion.get(container) !== version) return;
 
       container.empty();
       const body =
@@ -475,17 +478,17 @@ export class TasksDashboardModule {
       const tocContainer = body.createEl("div", { cls: "pv-toc-container" });
       for (const [groupName, tasks] of groupsArray) {
         const displayName = isHome
-          ? (groupName === "" ? "-" : groupName)
+          ? (groupName === "" ? labels.noStatus : groupName)
           : (groupName === UNGROUPED_KEY ? (labels.ungrouped ?? "Задачи без группы") : groupName);
         const displayIcon = isHome ? getIcon(groupName) : "📝";
         const btn = tocContainer.createEl("div", { cls: "pv-toc-btn" });
-        btn.innerHTML = `${displayIcon} ${displayName} <span class="pv-toc-count">&nbsp;(${tasks.length})</span>`;
+        btn.setText(`${displayIcon} ${displayName}`);
+        btn.createEl("span", { cls: "pv-toc-count", text: ` (${tasks.length})` });
         btn.dataset.group = groupName;
       }
 
       const totalSummaryContainer = body.createEl("div", {
-        cls: "pv-group-header-container",
-        attr: { style: "margin-bottom:5px; padding:4px 0; border-bottom:1px solid var(--background-modifier-border)" },
+        cls: "pv-group-header-container pv-total-summary",
       });
       const totalTitleDiv = totalSummaryContainer.createEl("div", { cls: "pv-group-title" });
       totalTitleDiv.createEl("span", { cls: "pv-group-title-text", text: `${labels.total} (${allTasks.length})` });
@@ -521,7 +524,7 @@ export class TasksDashboardModule {
         const collapsed = this.getGroupState(viewKey, groupName);
         const tbody = table.createEl("tbody", { cls: collapsed ? "pv-collapsed" : undefined });
         const displayName = isHome
-          ? (groupName === "" ? "-" : groupName)
+          ? (groupName === "" ? labels.noStatus : groupName)
           : (groupName === UNGROUPED_KEY ? (labels.ungrouped ?? "Задачи без группы") : groupName);
         const displayIcon = isHome ? getIcon(groupName) : "📝";
 
@@ -532,7 +535,7 @@ export class TasksDashboardModule {
         const groupTitleDiv = groupHeaderInner.createEl("div", { cls: "pv-group-title" });
         groupTitleDiv.createEl("span", { cls: "pv-collapse-arrow", text: "▼" });
         groupTitleDiv.createEl("span", { cls: "pv-group-title-text", text: `${displayIcon} ${displayName}` });
-        groupTitleDiv.createEl("span", { cls: "pv-group-count", html: `&nbsp;(${tasks.length})` });
+        groupTitleDiv.createEl("span", { cls: "pv-group-count", text: ` (${tasks.length})` });
         const gSummary = groupHeaderInner.createEl("div", { cls: "pv-group-summary" });
         this.fillSummaryByStatus(tasks, gSummary);
         groupTd.addEventListener("click", () => {
@@ -553,12 +556,21 @@ export class TasksDashboardModule {
           const select = tr.createEl("td", { cls: "pv-task-cell" }).createEl("select", {
             cls: "pv-status-select ui-select",
           });
-          select.createEl("option", { value: "", text: "-" });
           for (const opt of opts) {
-            const o = select.createEl("option", { value: opt.value, text: opt.label });
-            if (task.status && (task.status || "").toLowerCase().includes(opt.value.toLowerCase())) o.selected = true;
+            select.createEl("option", { value: opt.value, text: opt.label });
           }
-          if (!task.status) select.value = "";
+          const normalizedStatus = String(task.status ?? "").trim();
+          if (!normalizedStatus) select.value = "";
+          else {
+            const match = opts.find(
+              (o) => o.value !== "" && normalizedStatus.toLowerCase().includes(o.value.toLowerCase())
+            );
+            if (match) select.value = match.value;
+            else {
+              select.createEl("option", { value: normalizedStatus, text: normalizedStatus });
+              select.value = normalizedStatus;
+            }
+          }
           select.addEventListener("click", (e) => e.stopPropagation());
           select.addEventListener("change", async (e) => {
             const selectEl = e.target as HTMLSelectElement;
@@ -619,18 +631,12 @@ export class TasksDashboardModule {
               tbody.classList.remove("pv-collapsed");
               this.setGroupState(viewKey, groupName, false);
             }
-            groupRow.scrollIntoView({ behavior: "smooth", block: "start" });
+            groupRow.scrollIntoView({ behavior: "auto", block: "start" });
           });
         }
       }
       }
 
-      if (scrollableParent?.isConnected) {
-        scrollableParent.scrollTop = scrollTop;
-        setTimeout(() => {
-          if (scrollableParent.isConnected) scrollableParent.scrollTop = scrollTop;
-        }, 0);
-      }
     } catch (e) {
       container.empty();
       container.createEl("p", { text: UI_LABELS.errors.renderShort, cls: "view-error" });
@@ -640,6 +646,8 @@ export class TasksDashboardModule {
 }
 
 class StatusChangeCommentModal extends Modal {
+  private answered = false;
+
   constructor(
     app: import("obsidian").App,
     private oldStatus: string,
@@ -647,6 +655,12 @@ class StatusChangeCommentModal extends Modal {
     private onDone: (value: string | null) => void
   ) {
     super(app);
+  }
+
+  private finish(value: string | null): void {
+    if (this.answered) return;
+    this.answered = true;
+    this.onDone(value);
   }
 
   onOpen(): void {
@@ -663,15 +677,18 @@ class StatusChangeCommentModal extends Modal {
     });
     const btnRow = contentEl.createDiv({ cls: "opa-create-task-buttons" });
     btnRow.createEl("button", { text: "Отмена", cls: "mod-secondary" }).addEventListener("click", () => {
-      this.onDone(null);
+      this.finish(null);
+      this.close();
     });
     btnRow.createEl("button", { text: "Сохранить", cls: "mod-cta" }).addEventListener("click", () => {
-      this.onDone(textarea.value ?? "");
+      this.finish(textarea.value ?? "");
+      this.close();
     });
     textarea.focus();
   }
 
   onClose(): void {
+    this.finish(null);
     this.contentEl.empty();
   }
 }

@@ -16,8 +16,15 @@ export const STATUS_CONFIG: StatusItem[] = [
   { key: "отменено", label: "Отменено", icon: "🚫", weight: 100 },
 ];
 
-const DEFAULT_ICON = "❓";
+/** Пустой / не заданный статус (не путать с неизвестным значением). */
+export const EMPTY_STATUS_ICON = "◽";
+
+const UNKNOWN_STATUS_ICON = "❓";
 const DEFAULT_WEIGHT = 50;
+
+export function isEmptyStatus(statusStr: string | null | undefined): boolean {
+  return (statusStr ?? "").trim() === "";
+}
 
 export function getConfig(statusStr: string | null | undefined): StatusItem | undefined {
   const s = (statusStr ?? "").toLowerCase();
@@ -25,21 +32,26 @@ export function getConfig(statusStr: string | null | undefined): StatusItem | un
 }
 
 export function getIcon(statusStr: string | null | undefined): string {
+  if (isEmptyStatus(statusStr)) return EMPTY_STATUS_ICON;
   const conf = getConfig(statusStr);
-  return conf ? conf.icon : DEFAULT_ICON;
+  return conf ? conf.icon : UNKNOWN_STATUS_ICON;
 }
 
 export function getWeight(statusStr: string | null | undefined): number {
+  if (isEmptyStatus(statusStr)) return DEFAULT_WEIGHT;
   const conf = getConfig(statusStr);
   return conf ? conf.weight : DEFAULT_WEIGHT;
 }
 
 export function getDropdownOptions(): { value: string; label: string; icon: string }[] {
-  return STATUS_CONFIG.map((c) => ({
-    value: c.label,
-    label: `${c.label} ${c.icon}`,
-    icon: c.icon,
-  }));
+  return [
+    { value: "", label: `Без статуса ${EMPTY_STATUS_ICON}`, icon: EMPTY_STATUS_ICON },
+    ...STATUS_CONFIG.map((c) => ({
+      value: c.label,
+      label: `${c.label} ${c.icon}`,
+      icon: c.icon,
+    })),
+  ];
 }
 
 export const REFRESH_DELAY_MS = 500;

@@ -1,16 +1,16 @@
 import type { ModuleContext } from "./types";
 import { Paths } from "../core/Paths";
 import { read } from "../core/FileIO";
-import { readDataFile, writeDataFile, type InboxArchiveItem, INBOX_ARCHIVE_TRASH_PREFIX } from "../core/GamificationState";
+import { readDataFile, updateDataFile, type InboxArchiveItem, INBOX_ARCHIVE_TRASH_PREFIX } from "../core/GamificationState";
 
 const DEFAULT_INBOX_REWARDS = { xp: 5, gold: 2 };
 import { UI_LABELS } from "../ui/Labels";
 import { createCollapsibleSection } from "../ui/CollapsibleSection";
+import { BlockRegistry } from "../ui/BlockRegistry";
 import { Notice } from "obsidian";
 
 interface InboxData {
   visibleLines: string[];
-  inboxPath: string;
   inboxArchive: InboxArchiveItem[];
 }
 
@@ -42,149 +42,99 @@ function setInboxArchiveCollapsed(collapsed: boolean): void {
 
 export class InboxModule {
   private ctx: ModuleContext;
-  private blocks = new Set<{ el: HTMLElement; refresh: () => void }>();
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private registry: BlockRegistry;
   /** Пропустить следующий refresh после добавления записи из формы. */
   private skipNextInboxRefresh = false;
 
   constructor(ctx: ModuleContext) {
     this.ctx = ctx;
+    this.registry = new BlockRegistry({
+      app: ctx.app,
+      isEnabled: () => ctx.plugin.settings.enableInbox,
+      debounceMs: 500,
+      domSelector: ".opa-inbox-view",
+      createRefresh: (el) => () => this.render(el),
+    });
   }
 
   private getDataPath(): string {
     return this.ctx.plugin.getGamificationDataPath();
   }
 
-  private onChange = (...data: unknown[]): void => {
-    const _file = data[0] as { path?: string } | undefined;
-    if (_file?.path && _file.path !== this.getDataPath()) return;
+  private onChange = (file: { path?: string }): void => {
+    if (file?.path && file.path !== this.getDataPath()) return;
     this.scheduleRefresh();
   };
 
   load(): void {
-    this.ctx.app.metadataCache.on("changed", this.onChange);
-    this.ctx.app.vault.on("modify", this.onChange);
-    this.ctx.app.workspace.on("active-leaf-change", this.scheduleRefresh);
+    const { plugin, app } = this.ctx;
+    plugin.registerEvent(app.vault.on("modify", this.onChange));
+    plugin.registerEvent(app.workspace.on("active-leaf-change", this.scheduleRefresh));
 
-    this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-inbox-view", (_source, el) => {
+    plugin.registerMarkdownCodeBlockProcessor("opa-inbox-view", (_source, el) => {
       el.addClass("opa-inbox-view");
-      this.blocks.forEach((b) => { if (b.el === el) this.blocks.delete(b); });
-      const refresh = () => this.render(el);
-      this.blocks.add({ el, refresh });
-      this.render(el);
+      this.registry.register(el, () => this.render(el));
     });
   }
 
-  /** Есть ли хотя бы один блок инбокса в активной вкладке. */
-  private isAnyBlockVisible(): boolean {
-    const container = this.ctx.app.workspace.activeLeaf?.view?.containerEl;
-    if (!container) return false;
-    for (const b of this.blocks) {
-      if (b.el.isConnected && container.contains(b.el)) return true;
-    }
-    return false;
-  }
-
-  /** Обновить все открытые блоки (в т.ч. на фоновых вкладках). */
-  private runRefresh(): void {
-    this.blocks.forEach((b) => b.refresh());
-
-    if (this.blocks.size > 30) {
-      const stale = Array.from(this.blocks).filter((b) => !b.el.isConnected);
-      for (let i = 0; i < stale.length - 10; i++) {
-        this.blocks.delete(stale[i]);
-      }
-    }
-  }
-
   private scheduleRefresh = (): void => {
-    if (!this.ctx.plugin.settings.enableInbox) return;
-    if (!this.isAnyBlockVisible()) return;
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => {
-      this.debounceTimer = null;
-      if (this.skipNextInboxRefresh) {
-        this.skipNextInboxRefresh = false;
-        return;
-      }
-      this.runRefresh();
-    }, 500);
+    if (this.skipNextInboxRefresh) {
+      this.skipNextInboxRefresh = false;
+      return;
+    }
+    this.registry.scheduleRefresh();
   };
 
   /** Принудительное обновление блоков инбокса (сразу после добавления записи). */
   forceRefresh(): void {
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    this.runRefresh();
+    this.registry.forceRefresh();
   }
 
   unload(): void {
-    this.ctx.app.metadataCache.off("changed", this.onChange as (...data: unknown[]) => void);
-    this.ctx.app.vault.off("modify", this.onChange as (...data: unknown[]) => void);
-    this.ctx.app.workspace.off("active-leaf-change", this.scheduleRefresh);
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.blocks.clear();
+    this.registry.clear();
   }
 
   updateState(): void {
-    setTimeout(() => this.runRefresh(), 50);
+    this.registry.runRefresh();
   }
 
   private async loadInboxData(): Promise<InboxData | null> {
     try {
-      const dataPath = this.ctx.plugin?.getGamificationDataPath?.();
-      if (dataPath) {
-        const data = await readDataFile(this.ctx.plugin);
-        const visibleLines = (data.inbox ?? []).filter((l) => typeof l === "string" && l.trim().length > 0);
-        return { visibleLines, inboxPath: "data.json", inboxArchive: data.inboxArchive ?? [] };
+      const data = await readDataFile(this.ctx.plugin);
+      const visibleLines = (data.inbox ?? []).filter((l) => typeof l === "string" && l.trim().length > 0);
+      if (visibleLines.length > 0 || (data.inbox ?? []).length > 0) {
+        return { visibleLines, inboxArchive: data.inboxArchive ?? [] };
       }
-    } catch {
-      // fallback: data.json недоступен или без inbox
-    }
-    try {
+      // data.json пуст — возможно, есть старый Inbox.md для миграции
       const content = await read(this.ctx.app, Paths.INBOX_FILE);
       if (content != null) {
-        const visibleLines = content.split("\n").map((l) => l.trim()).filter((l) => l.length > 0 && !l.startsWith("- ["));
-        const dataPath = this.ctx.plugin?.getGamificationDataPath?.();
-        if (dataPath && visibleLines.length > 0) {
-          try {
-            const data = await readDataFile(this.ctx.plugin);
-            if (!data.inbox?.length) {
-              await writeDataFile(this.ctx.plugin, {
-                gamification: data.gamification,
-                projects: data.projects ?? [],
-                reminders: data.reminders ?? [],
-                inbox: visibleLines,
-                trash: data.trash ?? [],
-                inboxArchive: data.inboxArchive ?? [],
-              });
-            }
-            return { visibleLines, inboxPath: "data.json", inboxArchive: data.inboxArchive ?? [] };
-          } catch {
-            // миграция не удалась — просто показываем из Inbox.md
-          }
+        const migrated = content.split("\n").map((l) => l.trim()).filter((l) => l.length > 0 && !l.startsWith("- ["));
+        if (migrated.length > 0) {
+          await updateDataFile(this.ctx.plugin, (d) => {
+            if (!d.inbox?.length) d.inbox = migrated;
+          });
+          return { visibleLines: migrated, inboxArchive: data.inboxArchive ?? [] };
         }
-        return { visibleLines, inboxPath: "data.json", inboxArchive: [] };
       }
+      return { visibleLines: [], inboxArchive: data.inboxArchive ?? [] };
     } catch {
-      // Inbox.md тоже недоступен
+      new Notice(UI_LABELS.inbox.loadDataError);
+      return null;
     }
-    new Notice("Не удалось загрузить данные Inbox.");
-    return null;
+  }
+
+  /** Актуальный текст записи (после редактирования замыкания не устаревают). */
+  private rowText(rowEl: HTMLElement, fallback: string): string {
+    return rowEl.getAttribute("data-original-text") ?? fallback;
   }
 
   private async render(container: HTMLElement): Promise<void> {
     if (!this.ctx.plugin.settings.enableInbox) {
       container.empty();
-      container.style.display = "none";
+      container.addClass("opa-hidden");
       return;
     }
-    container.style.display = "";
-
-    const scrollableParent = container.closest(".cm-scroller, .markdown-reading-view, .markdown-preview-view") as HTMLElement | null;
-    const scrollTop = scrollableParent?.scrollTop ?? 0;
+    container.removeClass("opa-hidden");
 
     const L = UI_LABELS.inbox;
     const common = UI_LABELS.common;
@@ -197,7 +147,8 @@ export class InboxModule {
 
       if (!data) {
         body.createEl("p", { text: L.loadDataError, cls: "view-error" });
-      } else {
+        return;
+      }
       const formWrap = body.createEl("div", { cls: "view-add-form" });
       const input = formWrap.createEl("input", { type: "text", cls: "view-input", attr: { placeholder: L.addPlaceholder, "data-focus-restore": "add-input" } });
       const addBtn = formWrap.createEl("button", { text: common.add, cls: "view-btn" });
@@ -214,44 +165,37 @@ export class InboxModule {
         btnDone.addEventListener("click", (e) => {
           e.preventDefault();
           e.stopPropagation();
-          this.handleDone(line, row);
+          this.handleDone(this.rowText(row, line), row);
         });
         const btnTask = actions.createEl("button", { text: L.actions.task, cls: "inbox-action-btn" });
         btnTask.addEventListener("click", (e) => {
           e.preventDefault();
           e.stopPropagation();
-          this.handleCreateTask(line, row);
+          this.handleCreateTask(this.rowText(row, line), row);
         });
         const btnEdit = actions.createEl("button", { text: L.actions.edit, cls: "inbox-action-btn" });
-        btnEdit.addEventListener("click", () => this.handleEdit(line, row));
+        btnEdit.addEventListener("click", () => this.handleEdit(this.rowText(row, line), row));
         if (this.ctx.plugin.settings.enableReminders) {
           const btnReminder = actions.createEl("button", { text: L.actions.reminder, cls: "inbox-action-btn" });
-          btnReminder.addEventListener("click", () => this.handleReminder(line, row));
+          btnReminder.addEventListener("click", () => this.handleReminder(this.rowText(row, line), row));
         }
         const btnDel = actions.createEl("button", { text: L.actions.delete, cls: "inbox-action-btn" });
-        btnDel.addEventListener("click", () => this.handleDelete(line, row));
+        btnDel.addEventListener("click", () => this.handleDelete(this.rowText(row, line), row));
       };
 
       addBtn.addEventListener("click", async () => {
         const val = input.value.trim();
         if (!val) return;
-        const dataPath = this.getDataPath();
-        const data = await readDataFile(this.ctx.plugin);
-        const inbox = data.inbox ?? [];
-        if (inbox.some((l) => (l as string).trim() === val)) {
+        const current = await readDataFile(this.ctx.plugin);
+        if ((current.inbox ?? []).some((l) => l.trim() === val)) {
           new Notice(L.notices.duplicate);
           return;
         }
         input.value = "";
         this.skipNextInboxRefresh = true;
-        const nextInbox = [...inbox, val];
-        await writeDataFile(this.ctx.plugin, {
-          gamification: data.gamification,
-          projects: data.projects ?? [],
-          reminders: data.reminders ?? [],
-          inbox: nextInbox,
-          trash: data.trash ?? [],
-          inboxArchive: data.inboxArchive ?? [],
+        await updateDataFile(this.ctx.plugin, (d) => {
+          const inbox = d.inbox ?? [];
+          if (!inbox.some((l) => l.trim() === val)) d.inbox = [...inbox, val];
         });
         new Notice(`Добавлено: "${val}"`);
         appendRow(val);
@@ -274,21 +218,18 @@ export class InboxModule {
         const archiveTitle = L.archiveTitle ?? "Архив";
         const isArchiveCollapsed = getInboxArchiveCollapsed();
         const archiveSection = body.createEl("div", { cls: "inbox-archive rv-section rv-completed" });
-        const archiveHeader = archiveSection.createEl("h3", { cls: "rv-section-header" });
-        archiveHeader.style.cursor = "pointer";
-        archiveHeader.style.userSelect = "none";
-        archiveHeader.style.display = "flex";
-        archiveHeader.style.alignItems = "center";
+        const archiveHeader = archiveSection.createEl("h3", { cls: "rv-section-header opa-collapsible-header" });
         const archiveArrow = archiveHeader.createEl("span", { cls: "rv-section-arrow", text: isArchiveCollapsed ? "▶" : "▼" });
-        archiveHeader.createEl("span", { cls: "rv-section-title-text" }).innerHTML = `📦 ${archiveTitle}`;
+        const titleSpan = archiveHeader.createEl("span", { cls: "rv-section-title-text" });
+        titleSpan.setText(`📦 ${archiveTitle}`);
         archiveHeader.createEl("span", { cls: "rv-count", text: String(data.inboxArchive.length) });
         const archiveList = archiveSection.createEl("div", { cls: "rv-list inbox-archive-list" });
-        archiveList.style.display = isArchiveCollapsed ? "none" : "block";
+        archiveList.toggleClass("opa-hidden", isArchiveCollapsed);
         archiveHeader.addEventListener("click", () => {
-          const collapsed = archiveList.style.display === "none";
-          archiveList.style.display = collapsed ? "block" : "none";
-          archiveArrow.textContent = collapsed ? "▼" : "▶";
-          setInboxArchiveCollapsed(!collapsed);
+          const collapsed = !archiveList.hasClass("opa-hidden");
+          archiveList.toggleClass("opa-hidden", collapsed);
+          archiveArrow.textContent = collapsed ? "▶" : "▼";
+          setInboxArchiveCollapsed(collapsed);
         });
         for (const entry of data.inboxArchive) {
           const completedDate = formatInboxArchiveDate(entry.completedAt);
@@ -303,14 +244,7 @@ export class InboxModule {
           btnArchiveDel.addEventListener("click", () => this.handleDeleteFromArchive(entry, archiveRow));
         }
       }
-      }
 
-      if (scrollableParent?.isConnected) {
-        scrollableParent.scrollTop = scrollTop;
-        setTimeout(() => {
-          if (scrollableParent.isConnected) scrollableParent.scrollTop = scrollTop;
-        }, 0);
-      }
     } catch (e) {
       container.empty();
       container.createEl("p", { text: UI_LABELS.errors.renderShort, cls: "view-error" });
@@ -319,71 +253,50 @@ export class InboxModule {
   }
 
   private async handleDelete(originalText: string, rowEl: HTMLElement): Promise<void> {
-    const dataPath = this.getDataPath();
-    const data = await readDataFile(this.ctx.plugin);
-    const inbox = (data.inbox ?? []).filter((l) => (l as string).trim() !== originalText);
-    if (inbox.length === (data.inbox ?? []).length) {
-      rowEl.remove();
-      this.forceRefresh();
-      return;
-    }
-    const trash = [...(data.trash ?? []), originalText];
-    await writeDataFile(this.ctx.plugin, {
-      gamification: data.gamification,
-      projects: data.projects ?? [],
-      reminders: data.reminders ?? [],
-      inbox,
-      trash,
-      inboxArchive: data.inboxArchive ?? [],
+    let removed = false;
+    await updateDataFile(this.ctx.plugin, (d) => {
+      const inbox = d.inbox ?? [];
+      const next = inbox.filter((l) => l.trim() !== originalText);
+      if (next.length === inbox.length) return;
+      removed = true;
+      d.inbox = next;
+      d.trash = [...(d.trash ?? []), originalText];
     });
     rowEl.remove();
-    this.ctx.plugin.triggerTrashRefresh?.();
+    if (removed) this.ctx.plugin.triggerTrashRefresh?.();
     this.forceRefresh();
   }
 
   private async handleDone(originalText: string, rowEl: HTMLElement): Promise<void> {
-    const data = await readDataFile(this.ctx.plugin);
-    const inbox = (data.inbox ?? []).filter((l) => (l as string).trim() !== originalText);
-    if (inbox.length === (data.inbox ?? []).length) return;
-    const archive = data.inboxArchive ?? [];
-    const newEntry: InboxArchiveItem = { text: originalText, completedAt: new Date().toISOString() };
-    let gamificationPayload = data.gamification;
+    let removed = false;
+    await updateDataFile(this.ctx.plugin, (d) => {
+      const inbox = d.inbox ?? [];
+      const next = inbox.filter((l) => l.trim() !== originalText);
+      if (next.length === inbox.length) return;
+      removed = true;
+      d.inbox = next;
+      d.inboxArchive = [...(d.inboxArchive ?? []), { text: originalText, completedAt: new Date().toISOString() }];
+    });
+    if (!removed) return;
     if (this.ctx.plugin.settings.enableGamification) {
       const state = await this.ctx.plugin.getGamificationState();
       const reward = this.ctx.plugin.settings.gamificationInboxRewards ?? DEFAULT_INBOX_REWARDS;
       state.xp += reward.xp;
       state.gold += reward.gold;
-      gamificationPayload = state;
+      this.ctx.plugin.scheduleGamificationSave();
       new Notice(`${UI_LABELS.inbox.notices.updated} ${UI_LABELS.gamification.rewardLine(reward.xp, reward.gold)}`);
+      this.ctx.plugin.gamification?.updateState?.();
     } else {
       new Notice(UI_LABELS.inbox.notices.updated);
     }
-    await writeDataFile(this.ctx.plugin, {
-      gamification: gamificationPayload,
-      projects: data.projects ?? [],
-      reminders: data.reminders ?? [],
-      inbox,
-      trash: data.trash ?? [],
-      inboxArchive: [...archive, newEntry],
-    });
     rowEl.remove();
-    if (this.ctx.plugin.settings.enableGamification) {
-      this.ctx.plugin.gamification?.updateState?.();
-    }
-    setTimeout(() => this.forceRefresh(), 0);
+    this.forceRefresh();
   }
 
   private async handleDeleteFromArchive(entry: InboxArchiveItem, rowEl: HTMLElement): Promise<void> {
-    const data = await readDataFile(this.ctx.plugin);
-    const archive = (data.inboxArchive ?? []).filter((e) => e.text !== entry.text || e.completedAt !== entry.completedAt);
-    const trash = [...(data.trash ?? []), INBOX_ARCHIVE_TRASH_PREFIX + entry.text];
-    await writeDataFile(this.ctx.plugin, {
-      gamification: data.gamification,
-      projects: data.projects ?? [],
-      reminders: data.reminders ?? [],
-      inbox: data.inbox ?? [],
-      trash,
-      inboxArchive: archive,
+    await updateDataFile(this.ctx.plugin, (d) => {
+      d.inboxArchive = (d.inboxArchive ?? []).filter((e) => e.text !== entry.text || e.completedAt !== entry.completedAt);
+      d.trash = [...(d.trash ?? []), INBOX_ARCHIVE_TRASH_PREFIX + entry.text];
     });
     rowEl.remove();
     new Notice(UI_LABELS.inbox.notices.movedToTrash);
@@ -392,38 +305,34 @@ export class InboxModule {
   }
 
   private async handleEdit(originalText: string, rowEl: HTMLElement): Promise<void> {
-    const textSpan = rowEl.querySelector(".inbox-text");
-    const actionsDiv = rowEl.querySelector(".inbox-actions");
-    if (textSpan) (textSpan as HTMLElement).style.display = "none";
-    if (actionsDiv) (actionsDiv as HTMLElement).style.visibility = "hidden";
+    const textSpan = rowEl.querySelector<HTMLElement>(".inbox-text");
+    rowEl.addClass("is-editing");
 
-    const editInput = rowEl.createEl("input", { type: "text", cls: "view-input" });
-    (editInput as HTMLInputElement).value = originalText;
-    (editInput as HTMLInputElement).style.width = "100%";
+    const editInput = rowEl.createEl("input", { type: "text", cls: "view-input inbox-edit-input" });
+    editInput.value = originalText;
     rowEl.insertBefore(editInput, rowEl.firstChild);
     editInput.focus();
 
-    const save = async () => {
-      const newText = (editInput as HTMLInputElement).value.trim();
+    const stopEditing = (): void => {
       editInput.remove();
-      if (textSpan) (textSpan as HTMLElement).style.display = "";
-      if (actionsDiv) (actionsDiv as HTMLElement).style.visibility = "";
+      rowEl.removeClass("is-editing");
+    };
+
+    const save = async () => {
+      const newText = editInput.value.trim();
+      stopEditing();
       if (newText && newText !== originalText) {
-        const dataPath = this.getDataPath();
-        const data = await readDataFile(this.ctx.plugin);
-        const inbox = data.inbox ?? [];
-        const idx = inbox.findIndex((l) => (l as string).trim() === originalText);
-        if (idx !== -1) {
+        let updated = false;
+        await updateDataFile(this.ctx.plugin, (d) => {
+          const inbox = d.inbox ?? [];
+          const idx = inbox.findIndex((l) => l.trim() === originalText);
+          if (idx === -1) return;
+          updated = true;
           const next = [...inbox];
           next[idx] = newText;
-          await writeDataFile(this.ctx.plugin, {
-            gamification: data.gamification,
-            projects: data.projects ?? [],
-            reminders: data.reminders ?? [],
-            inbox: next,
-            trash: data.trash ?? [],
-            inboxArchive: data.inboxArchive ?? [],
-          });
+          d.inbox = next;
+        });
+        if (updated) {
           new Notice(UI_LABELS.inbox.notices.updated);
           if (textSpan) textSpan.textContent = newText;
           rowEl.setAttribute("data-original-text", newText);
@@ -439,9 +348,7 @@ export class InboxModule {
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        editInput.remove();
-        if (textSpan) (textSpan as HTMLElement).style.display = "";
-        if (actionsDiv) (actionsDiv as HTMLElement).style.visibility = "";
+        stopEditing();
       }
     });
     editInput.addEventListener("blur", () => { if (editInput.parentElement) save(); });
@@ -454,16 +361,8 @@ export class InboxModule {
       return;
     }
     const onSuccess = async (): Promise<void> => {
-      const dataPath = this.getDataPath();
-      const data = await readDataFile(this.ctx.plugin);
-      const inbox = (data.inbox ?? []).filter((l) => (l as string).trim() !== originalText);
-      await writeDataFile(this.ctx.plugin, {
-        gamification: data.gamification,
-        projects: data.projects ?? [],
-        reminders: data.reminders ?? [],
-        inbox,
-        trash: data.trash ?? [],
-        inboxArchive: data.inboxArchive ?? [],
+      await updateDataFile(this.ctx.plugin, (d) => {
+        d.inbox = (d.inbox ?? []).filter((l) => l.trim() !== originalText);
       });
       rowEl.remove();
       this.forceRefresh();
@@ -477,17 +376,9 @@ export class InboxModule {
       const recurTag = result.recurrence ? ` (${result.recurrence})` : "";
       const reminderLine = `- [ ] ${result.text}${recurTag} (@${dateStr})`;
 
-      const dataPath = this.getDataPath();
-      const data = await readDataFile(this.ctx.plugin);
-      const reminders = [...(data.reminders ?? []), reminderLine];
-      const inbox = (data.inbox ?? []).filter((l) => (l as string).trim() !== originalText);
-      await writeDataFile(this.ctx.plugin, {
-        gamification: data.gamification,
-        projects: data.projects ?? [],
-        reminders,
-        inbox,
-        trash: data.trash ?? [],
-        inboxArchive: data.inboxArchive ?? [],
+      await updateDataFile(this.ctx.plugin, (d) => {
+        d.reminders = [...(d.reminders ?? []), reminderLine];
+        d.inbox = (d.inbox ?? []).filter((l) => l.trim() !== originalText);
       });
 
       rowEl.remove();

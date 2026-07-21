@@ -1,0 +1,58 @@
+﻿
+/* Инлайн-редактирование напоминания */
+.rv-item.is-editing .rv-text {
+  display: none;
+}
+.rv-item.is-editing .rv-actions {
+  visibility: hidden;
+}
+.rv-edit-input {
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+/* Модалка уведомления */
+.opa-reminder-notif-title {
+  color: var(--interactive-accent);
+  margin-bottom: 15px;
+  font-weight: bold;
+}
+.opa-reminder-notif-text {
+  font-size: 1.1em;
+  font-weight: bold;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+.opa-reminder-notif-due {
+  color: var(--text-muted);
+  margin-bottom: 25px;
+  font-size: 0.9em;
+}
+
+/* Модалка выбора даты переноса */
+.opa-reminder-picker-modal {
+  width: 320px;
+  max-width: 92vw;
+}
+.opa-reminder-picker-input {
+  margin-bottom: 15px;
+  box-sizing: border-box;
+}
+
+/* Модалка создания напоминания */
+.opa-reminder-modal-input {
+  width: 100%;
+  margin-bottom: 15px;
+}
+.reminder-modal-recur {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.reminder-modal-recur-amount {
+  width: 60px;
+}
+.reminder-modal-recur-unit {
+  flex: 1;
+}
+

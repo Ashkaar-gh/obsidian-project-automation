@@ -3,19 +3,34 @@
  */
 
 import type { ModuleContext } from "./types";
-import { Component, MarkdownRenderer, getIcon, Menu, Notice } from "obsidian";
-import { read, modify, replaceSectionByHeading } from "../core/FileIO";
+import { Component, MarkdownRenderer, Menu, Notice, TFile, htmlToMarkdown } from "obsidian";
+import { replaceSectionByHeading, processSectionByHeading } from "../core/FileIO";
 import { Paths } from "../core/Paths";
 import { UI_LABELS } from "../ui/Labels";
+import { BlockRegistry } from "../ui/BlockRegistry";
 
 const DAILY_FOLDER = Paths.DAILY_FOLDER;
 const DATA_PATH = "data-opa-task-view-path";
 const DATA_NAME = "data-opa-task-view-name";
 const REFRESH_DEBOUNCE_MS = 2000;
 
-interface TaskViewBlock {
-  el: HTMLElement;
-  refresh: () => void;
+/** Состояние блока task-view (вместо ad-hoc свойств на DOM-элементах). */
+interface TaskViewBlockState {
+  structuredData?: TaskViewEntry[];
+  /** Не перерисовывать до этого времени (после собственного сохранения). */
+  ignoreRefreshUntil?: number;
+  /** Идёт ресайз картинки — не перерисовывать. */
+  imageResizeActive?: boolean;
+  component?: Component;
+  imageResizeCleanup?: () => void;
+  listenersAttached?: boolean;
+  lastContextMenu?: {
+    displayDiv: HTMLElement;
+    targetText: string;
+    isImage: boolean;
+    savedRange: Range | null;
+    imgForMarkdownCopy: HTMLImageElement | null;
+  } | null;
 }
 
 interface TocEntry {
@@ -56,9 +71,10 @@ function headingToAnchor(heading: string): string {
 
 export class TaskViewModule {
   private ctx: ModuleContext;
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private blocks = new Set<TaskViewBlock>();
+  private registry: BlockRegistry;
+  private blockState = new WeakMap<HTMLElement, TaskViewBlockState>();
   private rendering = new Set<HTMLElement>();
+  private pendingRender = new Set<HTMLElement>();
   private unsubscribeIndex: (() => void) | null = null;
   /** Текущий режим редактирования секции: выход по Escape или клику снаружи. */
   private activeEditRef: {
@@ -70,12 +86,51 @@ export class TaskViewModule {
 
   constructor(ctx: ModuleContext) {
     this.ctx = ctx;
+    this.registry = new BlockRegistry({
+      app: ctx.app,
+      isEnabled: () => true,
+      debounceMs: REFRESH_DEBOUNCE_MS,
+      shouldRefresh: (el) => {
+        const state = this.blockState.get(el);
+        if (state?.ignoreRefreshUntil && Date.now() < state.ignoreRefreshUntil) return false;
+        if (state?.imageResizeActive) return false;
+        // Не перерисовываем блок, пока в нём открыто редактирование — иначе теряются правки
+        if (this.activeEditRef && el.contains(this.activeEditRef.editWrap)) return false;
+        return true;
+      },
+      onPrune: (el) => this.cleanupBlock(el),
+    });
+  }
+
+  private getState(el: HTMLElement): TaskViewBlockState {
+    let state = this.blockState.get(el);
+    if (!state) {
+      state = {};
+      this.blockState.set(el, state);
+    }
+    return state;
+  }
+
+  /** Освободить ресурсы блока: компонент рендера, слушатели, ресайзер. */
+  private cleanupBlock(el: HTMLElement): void {
+    const state = this.blockState.get(el);
+    if (!state) return;
+    state.component?.unload();
+    state.component = undefined;
+    state.imageResizeCleanup?.();
+    state.imageResizeCleanup = undefined;
+    if (state.listenersAttached) {
+      el.removeEventListener("copy", this.handleSmartCopy);
+      el.removeEventListener("contextmenu", this.handleTaskViewContextMenu);
+      el.removeEventListener("click", this.handleInternalLinkClick);
+      state.listenersAttached = false;
+    }
+    this.blockState.delete(el);
   }
 
   load(): void {
     this.unsubscribeIndex = this.ctx.eventBus.on("index:updated", this.scheduleRefresh);
-    this.ctx.app.metadataCache.on("changed", this.onFileChanged);
-    this.ctx.app.workspace.on("active-leaf-change", this.onLeafChange);
+    this.ctx.plugin.registerEvent(this.ctx.app.workspace.on("active-leaf-change", this.onLeafChange));
 
     this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-task-view", (_source, el, ctx) => {
       el.addClass("opa-task-view");
@@ -89,59 +144,33 @@ export class TaskViewModule {
         el.createEl("p", { text: UI_LABELS.tasks.noNotes, cls: "pv-empty-message" });
         return;
       }
-      this.blocks.forEach((b) => {
-        if (b.el === el) this.blocks.delete(b);
-      });
-      const refresh = (): void => {
+      this.registry.register(el, () => {
         el.setAttribute(DATA_PATH, sourcePath);
         el.setAttribute(DATA_NAME, taskName);
         this.renderTaskView(el, sourcePath, taskName);
-      };
-      this.blocks.add({ el, refresh });
-      el.setAttribute(DATA_PATH, sourcePath);
-      el.setAttribute(DATA_NAME, taskName);
-      this.renderTaskView(el, sourcePath, taskName);
+      });
     });
   }
 
   unload(): void {
     if (this.unsubscribeIndex) this.unsubscribeIndex();
     this.unsubscribeIndex = null;
-    this.ctx.app.metadataCache.off("changed", this.onFileChanged);
-    this.ctx.app.workspace.off("active-leaf-change", this.onLeafChange);
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    for (const b of this.blocks) {
-      if ((b.el as any)._opaHasInternalLinkListener) {
-        b.el.removeEventListener("click", this.handleInternalLinkClick);
-        (b.el as any)._opaHasInternalLinkListener = false;
-      }
-    }
-    this.blocks.clear();
+    this._removeEditListeners?.();
+    this.registry.clear();
     this.rendering.clear();
+    this.pendingRender.clear();
   }
 
   private onLeafChange = (): void => {
+    const activeFile = this.ctx.app.workspace.getActiveFile();
+    const dailyPrefix = DAILY_FOLDER.replace(/\/?$/, "") + "/";
+    if (activeFile?.path.startsWith(dailyPrefix)) return;
     this.scheduleRefresh();
   };
 
-  /** Есть ли хотя бы один блок opa-task-view в активной вкладке. */
-  private isAnyBlockVisible(): boolean {
-    const container = this.ctx.app.workspace.activeLeaf?.view?.containerEl;
-    if (!container) return false;
-    for (const b of this.blocks) {
-      if (b.el.isConnected && container.contains(b.el)) return true;
-    }
-    return false;
-  }
-
   /** Рефреш при изменении индекса daily (create/rename/delete/changed). */
   private scheduleRefresh = (): void => {
-    if (!this.isAnyBlockVisible()) return;
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => {
-      this.debounceTimer = null;
-      this.runRefresh();
-    }, REFRESH_DEBOUNCE_MS);
+    this.registry.scheduleRefresh();
   };
 
   /** Сохранить текст из textarea в секцию ежедневной заметки (vault.process + поиск по заголовку). */
@@ -150,16 +179,16 @@ export class TaskViewModule {
     entryIndex: number,
     textareaEl: HTMLTextAreaElement
   ): Promise<void> => {
-    const structuredData = (containerEl as any)._opaStructuredData as TaskViewEntry[] | undefined;
+    const structuredData = this.blockState.get(containerEl)?.structuredData;
     if (!structuredData?.[entryIndex]) {
-      this.refreshBlock(containerEl);
+      this.registry.refreshBlock(containerEl);
       return;
     }
     const entry = structuredData[entryIndex];
     const file = this.ctx.app.vault.getAbstractFileByPath(entry.sourcePath);
-    if (!file || typeof (file as { extension?: string }).extension !== "string") {
+    if (!file || !(file instanceof TFile)) {
       new Notice(UI_LABELS.errors.fileNotFound(entry.sourcePath));
-      this.refreshBlock(containerEl);
+      this.registry.refreshBlock(containerEl);
       return;
     }
     const ok = await replaceSectionByHeading(
@@ -172,46 +201,10 @@ export class TaskViewModule {
       new Notice("Не удалось сохранить секцию (заголовок не найден в файле).");
     }
     if (ok) {
-      (containerEl as any)._opaIgnoreRefreshUntil = Date.now() + 2000;
+      this.getState(containerEl).ignoreRefreshUntil = Date.now() + 2000;
     }
-    this.refreshBlock(containerEl);
+    this.registry.refreshBlock(containerEl);
   };
-
-  private refreshBlock(containerEl: HTMLElement): void {
-    const block = Array.from(this.blocks).find((b) => b.el === containerEl);
-    block?.refresh();
-  }
-
-  /** Рефреш только если изменился файл, для которого на экране есть блок opa-task-view. */
-  private onFileChanged = (file: { path: string }): void => {
-    const isCurrentTask = Array.from(this.blocks).some(
-      (b) => b.el.getAttribute(DATA_PATH) === file.path
-    );
-    if (isCurrentTask) this.scheduleRefresh();
-  };
-
-  private runRefresh(): void {
-    this.blocks.forEach((b) => {
-      if (b.el.isConnected) {
-        const ignoreUntil = (b.el as any)._opaIgnoreRefreshUntil as number | undefined;
-        if (ignoreUntil && Date.now() < ignoreUntil) {
-          return;
-        }
-        b.refresh();
-      }
-    });
-
-    if (this.blocks.size > 30) {
-      const stale = Array.from(this.blocks).filter((b) => !b.el.isConnected);
-      for (let i = 0; i < stale.length - 10; i++) {
-        const b = stale[i];
-        const el = b.el as HTMLElement & { _opaComponent?: Component };
-        el._opaComponent?.unload();
-        el._opaComponent = undefined;
-        this.blocks.delete(b);
-      }
-    }
-  }
 
   private async fetchTaskViewData(taskName: string): Promise<{
     structuredData: TaskViewEntry[];
@@ -348,11 +341,13 @@ export class TaskViewModule {
     currentFilePath: string,
     taskName: string
   ): Promise<void> {
-    if (this.rendering.has(container)) return;
+    if (this.rendering.has(container)) {
+      this.pendingRender.add(container);
+      return;
+    }
     this.rendering.add(container);
+    this.pendingRender.delete(container);
 
-    const scrollableParent = container.closest(".cm-scroller, .markdown-reading-view, .markdown-preview-view");
-    const scrollTop = scrollableParent?.scrollTop ?? 0;
     const prevDetails = Array.from(container.querySelectorAll<HTMLDetailsElement>("details.task-view-entry"));
     const prevEntryCount = prevDetails.length;
     const openEntryIndices = new Set(
@@ -379,29 +374,21 @@ export class TaskViewModule {
     try {
       const { structuredData, flatTocEntries } = await this.fetchTaskViewData(taskName);
 
-      (container as any)._opaStructuredData = structuredData;
-      if (!(container as any)._opaHasCopyListener) {
+      const state = this.getState(container);
+      state.structuredData = structuredData;
+      if (!state.listenersAttached) {
         container.addEventListener("copy", this.handleSmartCopy);
-        (container as any)._opaHasCopyListener = true;
-      }
-      if (!(container as any)._opaHasContextMenuListener) {
         container.addEventListener("contextmenu", this.handleTaskViewContextMenu);
-        (container as any)._opaHasContextMenuListener = true;
-      }
-      if (!(container as any)._opaHasInternalLinkListener) {
         container.addEventListener("click", this.handleInternalLinkClick);
-        (container as any)._opaHasInternalLinkListener = true;
+        state.listenersAttached = true;
       }
 
       const tempContainer = document.createElement("div");
 
-      const containerWithComponent = container as HTMLElement & { _opaComponent?: Component };
-      if (containerWithComponent._opaComponent) {
-        containerWithComponent._opaComponent.unload();
-      }
+      state.component?.unload();
       const component = new Component();
       component.load();
-      containerWithComponent._opaComponent = component;
+      state.component = component;
 
       if (structuredData.length === 0) {
         tempContainer.createEl("p", { text: UI_LABELS.tasks.noNotes, cls: "pv-empty-message" });
@@ -413,8 +400,9 @@ export class TaskViewModule {
           });
           const summary = tocDetails.createEl("summary", { cls: "task-view-summary" });
           const titleContainer = summary.createDiv();
-          titleContainer.innerHTML =
-            '<div class="callout-title"><div class="callout-icon">✏️</div><div class="callout-title-inner">Оглавление</div></div>';
+          const calloutTitle = titleContainer.createDiv({ cls: "callout-title" });
+          calloutTitle.createDiv({ cls: "callout-icon", text: "✏️" });
+          calloutTitle.createDiv({ cls: "callout-title-inner", text: "Оглавление" });
           const tocCollapseBtn = summary.createEl("button", {
             cls: "task-view-collapse-button",
             text: "▼",
@@ -500,9 +488,8 @@ export class TaskViewModule {
             e.stopPropagation();
           });
 
-          const previewWrap = detailsEl.createDiv({ cls: "markdown-preview-view" });
-          const renderedDiv = previewWrap.createDiv({ cls: "markdown-rendered" });
-          const displayDiv = renderedDiv.createDiv({ cls: "task-view-display" });
+          const embedContentDiv = detailsEl.createDiv({ cls: "markdown-embed-content" });
+          const displayDiv = embedContentDiv.createDiv({ cls: "markdown-preview-view markdown-rendered task-view-display" });
           const contentToRender = (entry.content || "").replace(/^(=+)/gm, "\u200B$1").replace(/^(\d+)\|/gm, "$1\u200B|");
           await MarkdownRenderer.render(
             this.ctx.app,
@@ -521,20 +508,25 @@ export class TaskViewModule {
           });
 
           const blankAfterPre = this.getPreBlankAfterInSource(entry.content || "");
-          const allPreInDisplay = Array.from(
-            displayDiv.querySelectorAll<HTMLPreElement>("pre")
-          ).filter((p) => !p.closest(".internal-embed"));
-          allPreInDisplay.forEach((preEl, idx) => {
-            if (idx < blankAfterPre.length) {
-              preEl.setAttribute("data-after-blank", blankAfterPre[idx] ? "1" : "0");
-            } else {
-              preEl.setAttribute("data-after-blank", "1");
-            }
-          });
+          const blankBeforePre = this.getPreBlankBeforeInSource(entry.content || "");
 
-          displayDiv.querySelectorAll<HTMLPreElement>("pre").forEach((pre) => {
-            this.injectCopyButton(pre);
-          });
+          const applyPreLayoutAttrs = (): void => {
+            const list = Array.from(displayDiv.querySelectorAll<HTMLPreElement>("pre")).filter(
+              (p) => !p.closest(".internal-embed")
+            );
+            list.forEach((preEl, idx) => {
+              const before =
+                idx < blankBeforePre.length ? (blankBeforePre[idx] ? "1" : "0") : "1";
+              const after = idx < blankAfterPre.length ? (blankAfterPre[idx] ? "1" : "0") : "1";
+              preEl.setAttribute("data-before-blank", before);
+              preEl.setAttribute("data-after-blank", after);
+              this.mirrorPreLayoutAttrsOnPreWrapper(preEl, before, after);
+            });
+          };
+
+          applyPreLayoutAttrs();
+          requestAnimationFrame(() => applyPreLayoutAttrs());
+          window.setTimeout(() => applyPreLayoutAttrs(), 120);
 
           if (entry.subHeadings.length > 0) {
             const renderedHeadings = displayDiv.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6");
@@ -568,24 +560,23 @@ export class TaskViewModule {
           });
         }
 
-        this.setupImageResizer(containerWithComponent, structuredData);
+        this.setupImageResizer(container, structuredData);
       }
 
       container.empty();
       container.append(...Array.from(tempContainer.childNodes));
-
-      if (scrollableParent?.isConnected) {
-        scrollableParent.scrollTop = scrollTop;
-        setTimeout(() => {
-          if (scrollableParent.isConnected) scrollableParent.scrollTop = scrollTop;
-        }, 0);
-      }
     } catch (e) {
       container.empty();
       container.createEl("p", { text: UI_LABELS.errors.renderShort, cls: "view-error" });
       console.error(e);
     } finally {
       this.rendering.delete(container);
+      if (this.pendingRender.has(container)) {
+        this.pendingRender.delete(container);
+        const path = container.getAttribute(DATA_PATH);
+        const name = container.getAttribute(DATA_NAME);
+        if (path && name) void this.renderTaskView(container, path, name);
+      }
     }
   }
 
@@ -617,6 +608,50 @@ export class TaskViewModule {
     return result;
   }
 
+  /** Массив флагов: перед каждым блоком кода (строка с открывающими ```) была ли пустая строка в исходнике. */
+  private getPreBlankBeforeInSource(rawContent: string): boolean[] {
+    if (!rawContent || typeof rawContent !== "string") return [];
+    const result: boolean[] = [];
+    const lines = rawContent.split("\n");
+    let inCodeBlock = false;
+    let codeBlockMarker = "";
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!inCodeBlock) {
+        const match = line.match(/^([ \t]*)(`{3,}|~{3,})/);
+        if (match) {
+          const prev = i > 0 ? lines[i - 1].trim() === "" : false;
+          result.push(prev);
+          inCodeBlock = true;
+          codeBlockMarker = match[2];
+        }
+      } else if (line.trim().startsWith(codeBlockMarker)) {
+        inCodeBlock = false;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Prism/Obsidian часто пересоздаёт `pre` и сбрасывает data-*; родительский div (например .el-pre) обычно стабилен.
+   */
+  private mirrorPreLayoutAttrsOnPreWrapper(
+    preEl: HTMLPreElement,
+    beforeBlank: string,
+    afterBlank: string
+  ): void {
+    const parent = preEl.parentElement;
+    if (!parent || parent.tagName !== "DIV") return;
+    if (parent.classList.contains("markdown-preview-section")) return;
+    const taskRoot = preEl.closest(".task-view-display");
+    if (!taskRoot || parent === taskRoot) return;
+    const pres = parent.querySelectorAll(":scope > pre");
+    if (pres.length !== 1 || pres[0] !== preEl) return;
+    parent.setAttribute("data-before-blank", beforeBlank);
+    parent.setAttribute("data-after-blank", afterBlank);
+  }
+
   /** Массив флагов: после каждого заголовка была ли пустая строка в исходном Markdown. */
   private headingBlankAfterInSource(rawContent: string): boolean[] {
     if (!rawContent || typeof rawContent !== "string") return [];
@@ -630,44 +665,6 @@ export class TaskViewModule {
       }
     }
     return result;
-  }
-
-  /** Добавить кнопку копирования в pre, если её ещё нет. */
-  private injectCopyButton(preElement: HTMLPreElement): void {
-    if (preElement.querySelector(".task-view-copy-btn")) return;
-
-    const button = document.createElement("button");
-    button.className = "task-view-copy-btn";
-    button.setAttribute("aria-label", "Copy code");
-    button.textContent = "⧉";
-
-    button.addEventListener("click", async (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-
-      const codeEl = preElement.querySelector("code");
-      const raw = codeEl ? codeEl.textContent : preElement.textContent;
-      const codeText = (raw || "").replace(/\n+$/, "");
-      const cls = `${preElement.className} ${codeEl?.className ?? ""}`;
-      const langMatch = cls.match(/\blanguage-(\S+)\b/);
-      const lang = langMatch ? langMatch[1] : "";
-      const wrapped = `${lang ? "```" + lang + "\n" : "```\n"}${codeText}\n\`\`\``;
-
-      try {
-        await navigator.clipboard.writeText(wrapped);
-        button.classList.add("copied");
-        const originalText = button.textContent;
-        button.textContent = "✓";
-        setTimeout(() => {
-          button.textContent = originalText ?? "⧉";
-          button.classList.remove("copied");
-        }, 2000);
-      } catch (err) {
-        console.error(err);
-      }
-    });
-
-    preElement.appendChild(button);
   }
 
   /** Обработчик клика по внутренним ссылкам [[...]] в блоке просмотра задачи. */
@@ -705,14 +702,17 @@ export class TaskViewModule {
 
     ev.preventDefault();
     const { targetText, isImage } = this.getTargetTextAtPoint(displayDiv, ev.clientX, ev.clientY);
+    const imgForMarkdownCopy = this.getImageElementAtPoint(displayDiv, ev.clientX, ev.clientY);
     const sel = window.getSelection();
     const savedRange =
       sel && sel.rangeCount > 0 && container.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null;
-    (container as any)._opaLastContextMenu = {
+    const state = this.getState(container);
+    state.lastContextMenu = {
       displayDiv,
       targetText,
       isImage,
       savedRange,
+      imgForMarkdownCopy,
     };
 
     const menu = new Menu();
@@ -720,10 +720,9 @@ export class TaskViewModule {
       item.setTitle(UI_LABELS.common.copy)
         .setIcon("copy")
         .onClick(() => {
-          const data = (container as any)._opaLastContextMenu as
-            | { savedRange: Range | null }
-            | undefined;
-          (container as any)._opaLastContextMenu = undefined;
+          const data = state.lastContextMenu;
+          const imgFallback = data?.imgForMarkdownCopy ?? null;
+          state.lastContextMenu = null;
           const range = data?.savedRange;
           if (range) {
             const sel = window.getSelection();
@@ -732,7 +731,10 @@ export class TaskViewModule {
               sel.addRange(range);
             }
           }
-          const text = this.getCopyTextForSelection(container);
+          let text = this.getCopyTextForSelection(container);
+          if (text == null && imgFallback) {
+            text = this.copyPartFromImg(imgFallback);
+          }
           if (text != null) {
             navigator.clipboard.writeText(text).catch((err) => console.error(err));
           }
@@ -742,10 +744,8 @@ export class TaskViewModule {
       item.setTitle(UI_LABELS.common.edit)
         .setIcon("pencil")
         .onClick(() => {
-          const data = (container as any)._opaLastContextMenu as
-            | { displayDiv: HTMLElement; targetText: string; isImage: boolean }
-            | undefined;
-          (container as any)._opaLastContextMenu = undefined;
+          const data = state.lastContextMenu;
+          state.lastContextMenu = null;
           if (!data) return;
           const detailsEl = data.displayDiv.closest("details.task-view-entry") as HTMLElement | null;
           if (!detailsEl) return;
@@ -769,11 +769,11 @@ export class TaskViewModule {
   ): void {
     const index = parseInt(detailsEl.dataset.entryIndex ?? "0", 10);
     const editWrap = detailsEl.querySelector<HTMLElement>(".task-view-edit-wrap");
-    const previewWrap = detailsEl.querySelector<HTMLElement>(".markdown-preview-view");
+    const previewWrap = detailsEl.querySelector<HTMLElement>(".markdown-embed-content");
     const textarea = detailsEl.querySelector<HTMLTextAreaElement>(".task-view-edit");
     if (!editWrap || !previewWrap || !textarea) return;
 
-    const structuredData = (container as any)._opaStructuredData as TaskViewEntry[] | undefined;
+    const structuredData = this.blockState.get(container)?.structuredData;
     const entry = structuredData?.[index];
     if (!entry) return;
 
@@ -846,6 +846,20 @@ export class TaskViewModule {
     }
   }
 
+  /** Картинка под координатами в превью задачи (для копирования с ПКМ и т.п.). */
+  private getImageElementAtPoint(displayDiv: HTMLElement, clientX: number, clientY: number): HTMLImageElement | null {
+    const raw = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    if (!raw || !displayDiv.contains(raw)) return null;
+    if (raw.tagName === "IMG") return raw as HTMLImageElement;
+    const embed = raw.closest(".internal-embed");
+    if (embed && displayDiv.contains(embed)) {
+      const inner = embed.querySelector("img");
+      if (inner) return inner;
+    }
+    const closestImg = raw.closest("img");
+    return closestImg && displayDiv.contains(closestImg) ? (closestImg as HTMLImageElement) : null;
+  }
+
   /** Текст под курсором в превью (для скролла к месту при переходе в редактирование). */
   private getTargetTextAtPoint(
     displayDiv: HTMLElement,
@@ -866,8 +880,9 @@ export class TaskViewModule {
       const alt = el.getAttribute?.("alt");
       const srcAttr = el.getAttribute?.("src") ?? (el as HTMLImageElement).src ?? "";
       targetText = (alt || srcAttr || "").trim();
-      if (!targetText && el instanceof HTMLImageElement) {
-        const src = el.getAttribute("src") || "";
+      const imgForName = this.getImageElementAtPoint(displayDiv, clientX, clientY);
+      if (!targetText && imgForName) {
+        const src = imgForName.getAttribute("src") || "";
         targetText = decodeURIComponent((src.split("/").pop() || src).split("?")[0] || "");
       }
     } else if (document.caretRangeFromPoint) {
@@ -952,6 +967,24 @@ export class TaskViewModule {
   // УМНОЕ КОПИРОВАНИЕ (SMART COPY)
   // ========================================================================
 
+  /** true, если во фрагменте есть img или встроенный превью-embed с картинкой (выделение без текста). */
+  private fragmentContainsCopyableImage(fragment: DocumentFragment): boolean {
+    const walk = (n: Node): boolean => {
+      if (n.nodeType !== 1) return false;
+      const el = n as HTMLElement;
+      if (el.tagName === "IMG") return true;
+      if (el.classList.contains("internal-embed") && el.querySelector("img")) return true;
+      for (const child of el.childNodes) {
+        if (walk(child)) return true;
+      }
+      return false;
+    };
+    for (const child of fragment.childNodes) {
+      if (walk(child)) return true;
+    }
+    return false;
+  }
+
   private handleSmartCopy = (e: ClipboardEvent): void => {
     const container = e.currentTarget as HTMLElement;
     const text = this.getCopyTextForSelection(container);
@@ -967,30 +1000,43 @@ export class TaskViewModule {
    */
   private getCopyTextForSelection(container: HTMLElement): string | null {
     const sel = window.getSelection();
-    if (!sel || !sel.rangeCount || !container.contains(sel.anchorNode)) return null;
+    if (!sel || !sel.rangeCount) return null;
 
-    const anchorEl =
-      sel.anchorNode?.nodeType === 1
-        ? (sel.anchorNode as Element)
-        : (sel.anchorNode?.parentElement as Element | null);
-    const focusEl =
-      sel.focusNode?.nodeType === 1
-        ? (sel.focusNode as Element)
-        : (sel.focusNode?.parentElement as Element | null);
+    const range0 = sel.getRangeAt(0);
+    // Проверяем по общему предку диапазона — работает и при выделении снизу вверх.
+    if (!container.contains(range0.commonAncestorContainer)) return null;
 
-    const display = anchorEl?.closest(".task-view-display");
+    const toElement = (n: Node | null): Element | null =>
+      n?.nodeType === 1 ? (n as Element) : (n?.parentElement ?? null);
+    const anchorEl = toElement(range0.startContainer);
+    const focusEl = toElement(range0.endContainer);
+
+    const display =
+      anchorEl?.closest(".task-view-display") ?? focusEl?.closest(".task-view-display");
     if (!display || !container.contains(display)) return null;
-    if (!sel.toString()) return null;
+    const fragmentForMediaCheck = range0.cloneContents();
+    const hasText = (sel.toString() || "").trim().length > 0;
+    const hasCopyableImage = this.fragmentContainsCopyableImage(fragmentForMediaCheck);
+    if (!hasText && !hasCopyableImage) return null;
 
-    const pre = anchorEl?.closest("pre");
-    const samePre = pre && focusEl && pre.contains(focusEl);
-    if (pre && samePre) {
-      const selectedText = (sel.toString() || "").trim();
-      const codeEl = pre.querySelector("code");
-      const fullText = (codeEl ? codeEl.textContent : pre.textContent || "").replace(/\n+$/, "").trim();
-      return selectedText && selectedText !== fullText ? selectedText : this.copyPartFromPre(pre);
+    // Выделение целиком внутри одного <pre> — специальная обработка
+    const anchorPre = anchorEl?.closest("pre");
+    const focusPre = focusEl?.closest("pre");
+    const samePre = Boolean(anchorPre && focusPre && anchorPre === focusPre);
+    if (samePre && anchorPre) {
+      const selectedText = (sel?.toString() || "").trim();
+      const codeEl = anchorPre.querySelector("code");
+      const fullText = (codeEl?.textContent ?? anchorPre.textContent ?? "").replace(/\n+$/, "").trim();
+      return selectedText && selectedText !== fullText ? selectedText : this.copyPartFromPre(anchorPre);
     }
 
+    // Выделение частично захватывает <pre>: определяем откуда и куда
+    const partialPre: "none" | "end" | "start" | "both" =
+      anchorPre && focusPre && anchorPre !== focusPre ? "both" :
+      !anchorPre && focusPre ? "end" :
+      anchorPre && !focusPre ? "start" : "none";
+
+    // Выделение целиком внутри одного заголовка
     const heading = anchorEl?.closest("h1, h2, h3, h4, h5, h6") as HTMLElement | null;
     const sameHeading = heading && focusEl && heading.contains(focusEl);
     if (heading && sameHeading && display.contains(heading)) {
@@ -999,24 +1045,238 @@ export class TaskViewModule {
       return text ? "#".repeat(level) + " " + text : null;
     }
 
-    const fragment = sel.getRangeAt(0).cloneContents();
-    let sourceContent: string | null = null;
+    // Выделение через несколько записей (разные daily) — только DOM→markdown,
+    // иначе source-match путает границы между секциями.
+    const touchedEntries: HTMLElement[] = [];
+    container.querySelectorAll("details.task-view-entry").forEach((el) => {
+      if (range0.intersectsNode(el)) touchedEntries.push(el as HTMLElement);
+    });
+    if (touchedEntries.length > 1) {
+      return this.fragmentToMarkdown(fragmentForMediaCheck, partialPre);
+    }
 
-    const detailsEl =
-      (anchorEl?.closest("details.task-view-entry") as HTMLElement | null) ||
-      (focusEl?.closest("details.task-view-entry") as HTMLElement | null);
+    // Одна запись: пробуем вырезать из исходного markdown (сохраняет wikilinks, fences).
+    const detailsEl = touchedEntries[0]
+      ?? (anchorEl?.closest("details.task-view-entry") as HTMLElement | null)
+      ?? (focusEl?.closest("details.task-view-entry") as HTMLElement | null);
     if (detailsEl) {
-      const structuredData = (container as any)._opaStructuredData as TaskViewEntry[] | undefined;
+      const structuredData = this.blockState.get(container)?.structuredData;
       if (structuredData) {
         const entryIndex = parseInt(detailsEl.dataset.entryIndex || "0", 10);
         const entry = structuredData[entryIndex];
-        if (entry && entry.content) {
-          sourceContent = entry.content;
+        if (entry?.content) {
+          const fragText = this.getFragmentTextForSearch(fragmentForMediaCheck);
+          const snippet = this.extractSnippetFromSource(entry.content, fragText);
+          if (snippet != null) return snippet;
         }
       }
     }
 
-    return this.fragmentToCopyText(fragment, sourceContent);
+    // Фолбэк: htmlToMarkdown (с учётом частичного выделения <pre>)
+    return this.fragmentToMarkdown(fragmentForMediaCheck, partialPre);
+  }
+
+  /**
+   * Извлекает текст из DocumentFragment для поиска в source markdown.
+   * В отличие от sel.toString(), берёт из <pre> только реально присутствующий
+   * текст (не весь code block), что позволяет корректно определить границы.
+   * Текст внутри block-level элементов (p, h1-h6, li) собирается в одну строку.
+   */
+  private getFragmentTextForSearch(fragment: DocumentFragment): string {
+    const lines: string[] = [];
+    const BLOCK_TAGS = /^(P|H[1-6]|LI|BLOCKQUOTE|DIV|PRE|UL|OL|TABLE|HR)$/;
+
+    const getBlockText = (el: HTMLElement): void => {
+      if (el.tagName === "PRE") {
+        const codeEl = el.querySelector("code");
+        const codeText = (codeEl?.textContent ?? el.textContent ?? "").replace(/\n+$/, "");
+        if (codeText.trim()) lines.push(...codeText.split("\n").filter((l) => l.trim()));
+        return;
+      }
+      if (/^(P|H[1-6]|LI|BLOCKQUOTE)$/.test(el.tagName)) {
+        const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+        if (text) lines.push(text);
+        return;
+      }
+      // DIV и прочие контейнеры — рекурсия
+      for (const child of el.childNodes) {
+        if (child.nodeType === 1) getBlockText(child as HTMLElement);
+        else if (child.nodeType === 3) {
+          const t = (child.textContent || "").trim();
+          if (t) lines.push(t);
+        }
+      }
+    };
+
+    // Фрагмент может содержать как block-level элементы (<p>, <pre>),
+    // так и inline-содержимое (text nodes, <a>, <strong>) без обёртки.
+    // Собираем последовательные inline-узлы в одну строку.
+    let inlineBuf = "";
+    const flushInline = (): void => {
+      const trimmed = inlineBuf.replace(/\s+/g, " ").trim();
+      if (trimmed) lines.push(trimmed);
+      inlineBuf = "";
+    };
+
+    for (const child of fragment.childNodes) {
+      if (child.nodeType === 1) {
+        const el = child as HTMLElement;
+        if (BLOCK_TAGS.test(el.tagName)) {
+          flushInline();
+          getBlockText(el);
+        } else {
+          // Inline element (<a>, <strong>, <em>, <code>, <span>...)
+          inlineBuf += el.textContent || "";
+        }
+      } else if (child.nodeType === 3) {
+        inlineBuf += child.textContent || "";
+      }
+    }
+    flushInline();
+
+    return lines.join("\n");
+  }
+
+  /**
+   * Ищет фрагмент plain-text выделения в исходном markdown и возвращает
+   * соответствующий кусок исходника (с ```-разметкой, ссылками и т.д.).
+   *
+   * Стратегия: берём первую и последнюю непустую строку из выделения,
+   * ищем их позиции в sourceContent, вырезаем кусок между ними.
+   * Если между первой строкой и результатом поиска есть markdown-разметка
+   * (```, заголовки), она включается.
+   */
+  private extractSnippetFromSource(sourceContent: string, selectionText: string): string | null {
+    const plainText = selectionText.replace(/\r\n/g, "\n").replace(/\n+$/, "");
+    if (!plainText) return null;
+
+    const selLines = plainText.split("\n").filter((l) => l.trim().length > 0);
+    if (selLines.length === 0) return null;
+
+    const firstLine = selLines[0].trim();
+    const lastLine = selLines[selLines.length - 1].trim();
+    const srcLines = sourceContent.split("\n");
+
+    /** Убирает markdown-разметку из строки для нечёткого сравнения с plain text выделения. */
+    const strip = (s: string): string =>
+      s.replace(/^#+\s+/, "")          // заголовки
+       .replace(/`([^`]*)`/g, "$1")     // inline code
+       .replace(/\*\*([^*]*)\*\*/g, "$1") // bold
+       .replace(/\*([^*]*)\*/g, "$1")     // italic
+       .replace(/~~([^~]*)~~/g, "$1")     // strikethrough
+       .replace(/==([^=]*)==/g, "$1")     // highlight
+       .replace(/\[\[([^\]|]*)\|?([^\]]*)\]\]/g, (_m, href, display) => display || href) // wikilinks
+       .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1") // markdown links
+       .trim();
+
+    /** Проверяет, совпадает ли source-строка с plain-text строкой из выделения. */
+    const matchLine = (srcLine: string, selLine: string): boolean => {
+      const trimmedSrc = srcLine.trim();
+      if (!trimmedSrc || !selLine) return false;
+      if (trimmedSrc.includes(selLine) || selLine.includes(trimmedSrc)) return true;
+      const stripped = strip(srcLine);
+      if (stripped === selLine) return true;
+      if (stripped.includes(selLine) || selLine.includes(stripped)) return true;
+      // Префиксное совпадение для частично выделенной строки (не короче 8 символов)
+      if (selLine.length >= 8 && (stripped.startsWith(selLine) || selLine.startsWith(stripped.slice(0, selLine.length)))) {
+        return true;
+      }
+      return false;
+    };
+
+    // Ищем первую строку в исходнике
+    let startIdx = -1;
+    for (let i = 0; i < srcLines.length; i++) {
+      if (matchLine(srcLines[i], firstLine)) {
+        startIdx = i;
+        break;
+      }
+    }
+    if (startIdx === -1) return null;
+
+    // Ищем последнюю строку в исходнике (от startIdx, первое совпадение)
+    let endIdx = startIdx;
+    if (firstLine !== lastLine) {
+      for (let i = startIdx + 1; i < srcLines.length; i++) {
+        if (matchLine(srcLines[i], lastLine)) {
+          endIdx = i;
+          break;
+        }
+      }
+    }
+
+    // Если endIdx не сдвинулся при нескольких строках в выделении — поиск не удался
+    if (endIdx === startIdx && selLines.length > 1) return null;
+
+    // Проверяем, заканчивается ли вырезка внутри fenced code block.
+    // Если да — расширяем до закрывающего fence ТОЛЬКО если он идёт
+    // сразу за endIdx (возможно через пустые строки). Если между endIdx
+    // и fence есть ещё строки кода — значит пользователь выделил часть кода,
+    // и дописывать остаток не нужно.
+    let inCode = false;
+    let codeFence = "";
+    for (let i = startIdx; i <= endIdx; i++) {
+      const fenceMatch = srcLines[i].match(/^(`{3,}|~{3,})/);
+      if (!inCode && fenceMatch) {
+        inCode = true;
+        codeFence = fenceMatch[1];
+      } else if (inCode && srcLines[i].trim() === codeFence) {
+        inCode = false;
+        codeFence = "";
+      }
+    }
+    if (inCode && codeFence) {
+      for (let i = endIdx + 1; i < srcLines.length; i++) {
+        const trimmed = srcLines[i].trim();
+        if (trimmed === codeFence) {
+          endIdx = i;
+          break;
+        }
+        if (trimmed.length > 0) {
+          break;
+        }
+      }
+    }
+
+    // Собираем результат: целые строки от startIdx до endIdx.
+    // Последняя (и первая) строка может быть длиннее выделения — обрезаем.
+    const resultLines = srcLines.slice(startIdx, endIdx + 1);
+
+    // Обрезка последней строки: если source-строка значительно длиннее lastLine
+    if (resultLines.length >= 1 && endIdx >= startIdx) {
+      const idx = resultLines.length - 1;
+      const lastSrcLine = resultLines[idx];
+      const strippedLast = strip(lastSrcLine);
+      if (strippedLast.length > lastLine.length + 5) {
+        // Source-строка длиннее выделения — обрезаем по последним символам lastLine
+        const anchor = lastLine.slice(-Math.min(lastLine.length, 30));
+        const anchorPos = lastSrcLine.indexOf(anchor);
+        if (anchorPos >= 0) {
+          resultLines[idx] = lastSrcLine.substring(0, anchorPos + anchor.length);
+        }
+      }
+    }
+
+    // Обрезка первой строки: если source-строка начинается раньше выделения
+    if (resultLines.length >= 1) {
+      const firstSrcLine = resultLines[0];
+      const strippedFirst = strip(firstSrcLine);
+      if (strippedFirst.length > firstLine.length + 5) {
+        const anchor = firstLine.slice(0, Math.min(firstLine.length, 30));
+        // Ищем начало firstLine в stripped
+        const posInStripped = strippedFirst.indexOf(anchor);
+        if (posInStripped > 3) {
+          // firstLine начинается не с начала строки — ищем якорь в оригинале
+          const posInOriginal = firstSrcLine.indexOf(anchor);
+          if (posInOriginal > 0) {
+            resultLines[0] = firstSrcLine.substring(posInOriginal);
+          }
+        }
+      }
+    }
+
+    const snippet = resultLines.join("\n").replace(/\n+$/, "");
+    return snippet || null;
   }
 
   private copyPartFromPre(pre: HTMLElement): string {
@@ -1048,216 +1308,110 @@ export class TaskViewModule {
     return path ? `![[${path}]]` : "![image]";
   }
 
-  private fragmentToParts(fragment: DocumentFragment): any[] {
-    const parts: any[] = [];
+  /**
+   * Преобразует DocumentFragment в Markdown, используя Obsidian htmlToMarkdown
+   * с дополнительной пост-обработкой для wikilink'ов и внутренних эмбедов.
+   *
+   * @param partialPre — "end" если выделение заканчивается внутри pre (не включать
+   *   закрывающие ```), "start" если начинается внутри pre (не включать открывающие),
+   *   "both" если оба конца в разных pre, "none" если pre не затронут.
+   */
+  private fragmentToMarkdown(
+    fragment: DocumentFragment,
+    partialPre: "none" | "end" | "start" | "both" = "none"
+  ): string {
+    const wrapper = document.createElement("div");
+    wrapper.appendChild(fragment.cloneNode(true));
 
-    const walk = (n: Node): void => {
-      if (n.nodeType === 3) {
-        parts.push({ text: n.textContent ?? "", block: false });
-        return;
+    // Обработка <pre> элементов: заменяем на placeholder'ы чтобы htmlToMarkdown
+    // не генерировал fenced code blocks (мы формируем их сами с учётом обрезки).
+    const codeReplacements: { placeholder: string; markdown: string }[] = [];
+    const pres = Array.from(wrapper.querySelectorAll<HTMLPreElement>("pre"));
+    pres.forEach((pre, idx) => {
+      const codeEl = pre.querySelector("code");
+      const codeText = (codeEl?.textContent ?? pre.textContent ?? "").replace(/\n+$/, "");
+      const cls = (pre.className || "") + " " + (codeEl?.className || "");
+      const langMatch = cls.match(/\blanguage-(\S+)\b/);
+      const lang = langMatch ? langMatch[1] : "";
+
+      const isFirst = idx === 0;
+      const isLast = idx === pres.length - 1;
+
+      // Определяем нужны ли открывающие/закрывающие ```
+      const needOpen = !(partialPre === "start" && isFirst) && !(partialPre === "both" && isFirst);
+      const needClose = !(partialPre === "end" && isLast) && !(partialPre === "both" && isLast);
+
+      let markdown: string;
+      const openFence = needOpen ? (lang ? "```" + lang + "\n" : "```\n") : "";
+      const closeFence = needClose ? "\n```" : "";
+      markdown = openFence + codeText + closeFence;
+
+      const placeholder = `\nOPA_CODE_${idx}_${Date.now()}\n`;
+      codeReplacements.push({ placeholder: placeholder.trim(), markdown });
+
+      const markerEl = document.createElement("p");
+      markerEl.textContent = placeholder.trim();
+      pre.replaceWith(markerEl);
+    });
+
+    // Заменяем .internal-embed на текст ![[...]]
+    wrapper.querySelectorAll<HTMLElement>(".internal-embed").forEach((embed) => {
+      const alt = embed.getAttribute("alt");
+      const src = embed.getAttribute("src");
+      let text = "";
+      if (alt) {
+        text = `![[${alt}]]`;
+      } else if (src) {
+        const cleanSrc = decodeURIComponent(src.split("/").pop() || src).split("?")[0];
+        text = `![[${cleanSrc}]]`;
       }
-      if (n.nodeType !== 1) return;
-
-      const el = n as HTMLElement;
-
-      if (el.tagName === "PRE") {
-        const blankAfter = el.getAttribute("data-after-blank") === "1";
-        parts.push({ text: this.copyPartFromPre(el), block: true, blankAfter, tightAfter: !blankAfter });
-        return;
+      if (text) {
+        embed.replaceWith(document.createTextNode(text));
       }
+    });
 
-      if (el.tagName === "CODE") {
-        parts.push({ text: `\`${el.textContent}\``, block: false });
-        return;
+    // Заменяем a.internal-link на [[...]] маркеры
+    wrapper.querySelectorAll<HTMLAnchorElement>("a.internal-link").forEach((link) => {
+      const href = (link.getAttribute("data-href") || link.getAttribute("href") || "").trim();
+      const display = (link.textContent || "").trim();
+      let cleanHref = href;
+      if (cleanHref.startsWith("app://")) {
+        cleanHref = decodeURIComponent(cleanHref.split("/").pop() || cleanHref).split("?")[0];
       }
-
-      if (el.classList.contains("internal-embed")) {
-        const alt = el.getAttribute("alt");
-        const src = el.getAttribute("src");
-        if (alt) {
-          parts.push({ text: `![[${alt}]]`, block: true });
-        } else if (src) {
-          let cleanSrc = decodeURIComponent(src.split("/").pop() || src).split("?")[0];
-          parts.push({ text: `![[${cleanSrc}]]`, block: true });
-        }
-        return;
+      if (cleanHref) {
+        const text = display && display !== cleanHref ? `[[${cleanHref}|${display}]]` : `[[${cleanHref}]]`;
+        link.replaceWith(document.createTextNode(text));
       }
+    });
 
-      if (el.tagName === "IMG" && !el.closest(".internal-embed")) {
-        const alt = el.getAttribute("alt") || "";
-        const src = el.getAttribute("src") || "";
-        let cleanSrc = src;
-        if (cleanSrc.startsWith("app://")) {
-          cleanSrc = decodeURIComponent(cleanSrc.split("/").pop() || cleanSrc).split("?")[0];
-        }
-        parts.push({ text: `![${alt}](${cleanSrc})`, block: true });
-        return;
-      }
+    // Заменяем <mark> на ==...== (htmlToMarkdown не поддерживает highlight)
+    wrapper.querySelectorAll<HTMLElement>("mark").forEach((mark) => {
+      const text = mark.textContent || "";
+      mark.replaceWith(document.createTextNode(`==${text}==`));
+    });
 
-      const headingMatch = el.tagName && el.tagName.match(/^H([1-6])$/);
-      if (headingMatch) {
-        const level = parseInt(headingMatch[1], 10);
-        const text = (el.textContent || "").trim();
-        const blankAfter = el.getAttribute("data-after-blank") === "1";
-        if (text) parts.push({ text: "#".repeat(level) + " " + text, block: true, blankAfter });
-        return;
-      }
+    const html = wrapper.innerHTML;
+    let md = htmlToMarkdown(html);
 
-      if (el.tagName === "A") {
-        const href = (el.getAttribute("data-href") || el.getAttribute("href") || "").trim();
-        const isInternal = el.classList.contains("internal-link") || (href && !/^[\w+.-]+:/.test(href));
-
-        if (isInternal) {
-          const display = (el.textContent || "").trim();
-          let cleanHref = href;
-          if (cleanHref.startsWith("app://")) {
-            cleanHref = decodeURIComponent(cleanHref.split("/").pop() || cleanHref).split("?")[0];
-          }
-          if (cleanHref) {
-            const linkText =
-              display && display !== cleanHref ? `[[${cleanHref}|${display}]]` : `[[${cleanHref}]]`;
-            parts.push({ text: linkText, block: false });
-            return;
-          }
-        } else if (href) {
-          const display = (el.textContent || "").trim();
-          parts.push({ text: `[${display}](${href})`, block: false });
-          return;
-        }
-      }
-
-      if (el.tagName === "INPUT" && el.getAttribute("type") === "checkbox") {
-        const isChecked = (el as HTMLInputElement).checked;
-        parts.push({ text: isChecked ? "- [x] " : "- [ ] ", block: false });
-        return;
-      }
-
-      if (el.tagName === "LI") {
-        if (!el.classList.contains("task-list-item")) {
-          parts.push({ text: "- ", block: false });
-        }
-        el.childNodes.forEach(walk);
-        return;
-      }
-
-      if (el.tagName === "BLOCKQUOTE") {
-        const lines = (el.textContent || "").trim().split("\n");
-        const text = lines.map((l) => "> " + l).join("\n");
-        parts.push({ text, block: true });
-        return;
-      }
-
-      if (el.tagName === "STRONG" || el.tagName === "B") {
-        parts.push({ text: `**${el.textContent}**`, block: false });
-        return;
-      }
-      if (el.tagName === "EM" || el.tagName === "I") {
-        parts.push({ text: `*${el.textContent}*`, block: false });
-        return;
-      }
-      if (el.tagName === "DEL") {
-        parts.push({ text: `~~${el.textContent}~~`, block: false });
-        return;
-      }
-      if (el.tagName === "MARK") {
-        parts.push({ text: `==${el.textContent}==`, block: false });
-        return;
-      }
-
-      n.childNodes.forEach(walk);
-    };
-
-    fragment.childNodes.forEach(walk);
-    return parts;
-  }
-
-  private countNewlinesBetweenParts(sourceContent: string, parts: any[]): (number | null)[] {
-    if (!sourceContent || !parts || parts.length < 2) return [];
-    const result: (number | null)[] = [];
-    let searchFrom = 0;
-
-    for (let i = 0; i < parts.length - 1; i++) {
-      const a = parts[i].text;
-      const b = parts[i + 1].text;
-
-      let posA = sourceContent.indexOf(a, searchFrom);
-      if (posA === -1) posA = sourceContent.indexOf(a);
-
-      const endA = posA !== -1 ? posA + a.length : searchFrom;
-
-      let posB = sourceContent.indexOf(b, endA);
-      if (posB === -1) posB = sourceContent.indexOf(b);
-
-      if (posA !== -1 && posB !== -1 && posB >= endA) {
-        const gap = sourceContent.substring(endA, posB);
-        const count = (gap.match(/\n/g) || []).length;
-        result.push(count);
-        searchFrom = posB;
-      } else {
-        result.push(null);
-        if (posB !== -1) searchFrom = posB;
-      }
-    }
-    return result;
-  }
-
-  private joinParts(parts: any[], newlinesAfter: (number | null)[] | null): string {
-    const normalize = (s: string) => (s || "").replace(/\n+$/, "").replace(/^\n+/, "");
-    const trimmed = parts.map((p) => ({ ...p, text: normalize(p.text) })).filter((p) => p.text.length > 0);
-
-    let out = "";
-    for (let i = 0; i < trimmed.length; i++) {
-      let sep = "";
-      if (i > 0) {
-        const prev = trimmed[i - 1];
-        const curr = trimmed[i];
-        const prevIsBlock = prev.block || /^```/.test(prev.text || "");
-        const currIsBlock = curr.block || /^```/.test(curr.text || "");
-
-        const n = newlinesAfter && newlinesAfter[i - 1] !== undefined ? newlinesAfter[i - 1] : null;
-
-        if (n !== null) {
-          if (n === 0) {
-            sep = !prevIsBlock && !currIsBlock ? "" : "\n";
-          } else {
-            sep = "\n".repeat(n);
-          }
-        } else {
-          const prevBlank =
-            prev.blankAfter === true ? "\n\n" : prev.blankAfter === false ? "\n" : "\n\n";
-          if (currIsBlock) {
-            sep = prev.block ? (prev.tightAfter ? "\n" : prevBlank) : "\n";
-          } else {
-            sep = prev.block ? (prev.tightAfter ? "\n" : prevBlank) : " ";
-          }
-        }
-      }
-      out += sep + trimmed[i].text;
+    // Подставляем обратно код вместо placeholder'ов
+    for (const { placeholder, markdown } of codeReplacements) {
+      md = md.replace(placeholder, markdown);
     }
 
-    return out.replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "").replace(/\n+$/, "\n");
-  }
+    // Нормализация: убираем тройные+ переносы
+    md = md.replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "").replace(/\n+$/, "");
 
-  private fragmentToCopyText(fragment: DocumentFragment, sourceContent: string | null): string {
-    const parts = this.fragmentToParts(fragment);
-    const normalize = (s: string) => (s || "").replace(/\n+$/, "").replace(/^\n+/, "");
-    const trimmed = parts.map((p) => ({ ...p, text: normalize(p.text) })).filter((p) => p.text.length > 0);
-
-    const newlinesAfter =
-      sourceContent && trimmed.length > 1 ? this.countNewlinesBetweenParts(sourceContent, trimmed) : null;
-
-    return this.joinParts(parts, newlinesAfter);
+    return md;
   }
 
   // ========================================================================
   // Ресайзинг картинок
   // ========================================================================
 
-  private setupImageResizer(container: HTMLElement & { _opaImageResizeCleanup?: () => void }, structuredData: TaskViewEntry[]): void {
-    if (container._opaImageResizeCleanup) {
-      container._opaImageResizeCleanup();
-      container._opaImageResizeCleanup = undefined;
-    }
+  private setupImageResizer(container: HTMLElement, structuredData: TaskViewEntry[]): void {
+    const state = this.getState(container);
+    state.imageResizeCleanup?.();
+    state.imageResizeCleanup = undefined;
 
     const RESIZE_ZONE_PX = 14;
     const MIN_WIDTH = 50;
@@ -1292,36 +1446,19 @@ export class TaskViewModule {
       if (!imageName) return;
       const entry = structuredData[entryIndex];
       if (!entry) return;
-      const originalFileContent = await read(this.ctx.app, entry.sourcePath);
-      if (originalFileContent == null) return;
-
-      const sectionContent = originalFileContent.substring(
-        entry.contentStartOffset,
-        entry.contentEndOffset
-      );
+      const file = this.ctx.app.vault.getAbstractFileByPath(entry.sourcePath);
+      if (!file || !(file instanceof TFile)) return;
 
       const escaped = imageName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const imageRegex = new RegExp(`!\\[\\[${escaped}(\\|\\d+)?\\]\\]`, "g");
-      const newSectionContent = sectionContent.replace(imageRegex, (_m, sizeGroup) => {
-        const sizePart = `|${newWidth}`;
-        if (sizeGroup) return `![[${
-          imageName
-        }${sizePart}]]`;
-        return `![[${
-          imageName
-        }${sizePart}]]`;
+
+      state.ignoreRefreshUntil = Date.now() + REFRESH_DEBOUNCE_MS + 1500;
+      await processSectionByHeading(this.ctx.app, file, entry.headingLine, (body) => {
+        const newBody = body.replace(imageRegex, () => `![[${imageName}|${newWidth}]]`);
+        if (newBody === body) return null;
+        entry.content = newBody.replace(/^\n+/, "").replace(/\n+$/, "");
+        return newBody;
       });
-
-      if (newSectionContent === sectionContent) return;
-
-      const fullContent =
-        originalFileContent.slice(0, entry.contentStartOffset) +
-        newSectionContent +
-        originalFileContent.slice(entry.contentEndOffset);
-
-      (container as any)._opaIgnoreRefreshUntil = Date.now() + 2000;
-      await modify(this.ctx.app, entry.sourcePath, fullContent);
-      entry.content = newSectionContent.replace(/^\n+/, "").replace(/\n+$/, "");
     };
 
     let resizeState: {
@@ -1362,10 +1499,12 @@ export class TaskViewModule {
       const entryIndex = resizeState.entryIndex;
       const imageName = resizeState.decodedSrc;
       resizeState.active = false;
+      state.imageResizeActive = false;
       document.removeEventListener("mousemove", resizeMoveHandler);
       document.removeEventListener("mouseup", resizeUpHandler);
       if (saveImageDebounceTimer) clearTimeout(saveImageDebounceTimer);
       if (entryIndex != null && imageName) {
+        state.ignoreRefreshUntil = Date.now() + REFRESH_DEBOUNCE_MS + 1500;
         saveImageDebounceTimer = setTimeout(() => {
           saveImageSize(entryIndex, imageName, finalWidth);
         }, 150);
@@ -1421,6 +1560,7 @@ export class TaskViewModule {
         startLeft,
         lastWidth,
       };
+      state.imageResizeActive = true;
       ctx.targetEl.classList.remove("task-view-resize-zone");
       document.addEventListener("mousemove", resizeMoveHandler);
       document.addEventListener("mouseup", resizeUpHandler);
@@ -1434,8 +1574,10 @@ export class TaskViewModule {
     container.addEventListener("mousedown", resizeZoneDownHandler);
     container.addEventListener("mouseleave", resizeZoneLeaveHandler);
 
-    container._opaImageResizeCleanup = () => {
+    state.imageResizeCleanup = () => {
       if (saveImageDebounceTimer) clearTimeout(saveImageDebounceTimer);
+      resizeState.active = false;
+      state.imageResizeActive = false;
       container.removeEventListener("mousemove", resizeZoneMoveHandler);
       container.removeEventListener("mousedown", resizeZoneDownHandler);
       container.removeEventListener("mouseleave", resizeZoneLeaveHandler);

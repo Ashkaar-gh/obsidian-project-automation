@@ -590,3 +590,34 @@
     margin-bottom: 0.5rem;
     color: var(--text-normal);
 }
+
+/* Скрытие блоков выключенных модулей */
+.opa-hidden {
+  display: none;
+}
+
+/* Редактирование строки блокнота */
+.view-list-row.is-editing .inbox-text {
+  display: none;
+}
+.view-list-row.is-editing .inbox-actions {
+  visibility: hidden;
+}
+.inbox-edit-input {
+  width: 100%;
+}
+
+/* Кликабельные заголовки сворачиваемых секций */
+.opa-collapsible-header {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+}
+
+/* Отступ вложенных секций настроек */
+.opa-settings-indent {
+  margin-left: 1.2em;
+  padding-left: 0.8em;
+}
+
