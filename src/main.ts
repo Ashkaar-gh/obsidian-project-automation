@@ -1,11 +1,5 @@
-import { App, MarkdownView, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
-import { eventBus } from "./core/EventBus";
-
-const DEFAULT_DIFFICULTY_REWARDS: Record<string, { xp: number; gold: number }> = {
-  легкая: { xp: 5, gold: 2 },
-  средняя: { xp: 10, gold: 5 },
-  сложная: { xp: 20, gold: 10 },
-};
+import { Notice, Plugin, TFile } from "obsidian";
+import { EventBus } from "./core/EventBus";
 
 export interface PluginSettings {
   enableGamification: boolean;
@@ -61,7 +55,7 @@ const DEFAULT_SETTINGS: PluginSettings = {
   contextOptions: "личное, работа",
   gamificationXpLevelBase: 20,
   gamificationDefaultDifficulty: "легкая",
-  gamificationDifficultyRewards: { ...DEFAULT_DIFFICULTY_REWARDS },
+  gamificationDifficultyRewards: { ...DIFFICULTY_REWARDS_DEFAULT },
   gamificationActivityDifficultyRewards: { ...ACTIVITY_DIFFICULTY_REWARDS_DEFAULT },
   gamificationActivityDefaultDifficulty: "легкая",
   gamificationReminderRewards: { xp: 2, gold: 1 },
@@ -79,14 +73,16 @@ import { TasksDashboardModule } from "./modules/TasksDashboardModule";
 import {
   DEFAULT_GAMIFICATION_DEFAULTS,
   ACTIVITY_DIFFICULTY_REWARDS_DEFAULT,
-  DIFFICULTY_DISPLAY_LABELS,
+  DIFFICULTY_REWARDS_DEFAULT,
   readDataFile,
+  updateDataFile,
   writeDataFile,
   readState,
   writeState,
   type GamificationDefaults,
   type GamificationState,
 } from "./core/GamificationState";
+import { ObsidianProjectAutomationSettingTab } from "./ui/SettingsTab";
 import { GamificationModule } from "./modules/GamificationModule";
 import { RemindersModule } from "./modules/RemindersModule";
 import { InboxModule } from "./modules/InboxModule";
@@ -102,7 +98,8 @@ export class ObsidianProjectAutomationPlugin extends Plugin {
   settings!: PluginSettings;
   taskIndex!: TaskIndex;
   remindersIndex!: RemindersIndex;
-  eventBus = eventBus;
+  /** Своя шина на каждый экземпляр плагина: при перезагрузке плагина слушатели не копятся. */
+  eventBus = new EventBus();
 
   /** Кэш состояния геймификации в памяти. */
   private gamificationState: GamificationState | null = null;
@@ -123,7 +120,7 @@ export class ObsidianProjectAutomationPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
-    this.taskIndex = new TaskIndex(this.app, this.eventBus);
+    this.taskIndex = new TaskIndex(this.app, this.eventBus, undefined, this);
     this.taskIndex.ensureSubscribed();
     this.remindersIndex = new RemindersIndex(this.app, this);
 
@@ -134,14 +131,14 @@ export class ObsidianProjectAutomationPlugin extends Plugin {
     });
 
     this.addSettingTab(new ObsidianProjectAutomationSettingTab(this.app, this));
-    this.app.vault.on("delete", this.onVaultFileDeleted);
-    this.app.vault.on("modify", this.onVaultModify);
+    this.registerEvent(this.app.vault.on("delete", this.onVaultFileDeleted));
+    this.registerEvent(this.app.vault.on("modify", this.onVaultModify));
     this.loadActiveModules();
   }
 
   private async openOrCreateHomepage(): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(Paths.HOMEPAGE_FILE);
-    if (file) {
+    if (file instanceof TFile) {
       await this.app.workspace.getLeaf(true).openFile(file);
       return;
     }
@@ -152,7 +149,7 @@ export class ObsidianProjectAutomationPlugin extends Plugin {
 
   private async resetHomepageToDefault(): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(Paths.HOMEPAGE_FILE);
-    if (!file) {
+    if (!(file instanceof TFile)) {
       await this.openOrCreateHomepage();
       return;
     }
@@ -162,8 +159,6 @@ export class ObsidianProjectAutomationPlugin extends Plugin {
   }
 
   onunload(): void {
-    this.app.vault.off("modify", this.onVaultModify);
-    this.app.vault.off("delete", this.onVaultFileDeleted);
     if (this.gamificationSaveTimeout) {
       clearTimeout(this.gamificationSaveTimeout);
       this.gamificationSaveTimeout = null;
@@ -186,20 +181,17 @@ export class ObsidianProjectAutomationPlugin extends Plugin {
   };
 
   private async removeProjectIfInList(projectName: string): Promise<void> {
-    const data = await readDataFile(this);
-    const projects = data.projects ?? [];
     const baseName = projectName.split("/").pop() ?? projectName;
     const toRemove = new Set([projectName, baseName]);
-    const next = projects.filter((p) => !toRemove.has(p));
-    if (next.length === projects.length) return;
-    await writeDataFile(this, {
-      gamification: data.gamification,
-      projects: next,
-      reminders: data.reminders ?? [],
-      inbox: data.inbox ?? [],
-      trash: data.trash ?? [],
+    let removed = false;
+    await updateDataFile(this, (d) => {
+      const projects = d.projects ?? [];
+      const next = projects.filter((p) => !toRemove.has(p));
+      if (next.length === projects.length) return;
+      removed = true;
+      d.projects = next;
     });
-    this.tasksDashboard?.scheduleRefresh();
+    if (removed) this.tasksDashboard?.scheduleRefresh();
   }
 
   async loadSettings(): Promise<void> {
@@ -227,7 +219,7 @@ export class ObsidianProjectAutomationPlugin extends Plugin {
       !migrated.gamificationDifficultyRewards ||
       typeof migrated.gamificationDifficultyRewards !== "object"
     )
-      migrated.gamificationDifficultyRewards = { ...DEFAULT_DIFFICULTY_REWARDS };
+      migrated.gamificationDifficultyRewards = { ...DIFFICULTY_REWARDS_DEFAULT };
     if (
       !migrated.gamificationActivityDifficultyRewards ||
       typeof migrated.gamificationActivityDifficultyRewards !== "object"
@@ -376,61 +368,21 @@ export class ObsidianProjectAutomationPlugin extends Plugin {
 
   /** Добавить проект в список (в data.json). Вызывается после создания проекта по шаблону. */
   async addProject(noteName: string): Promise<void> {
-    const data = await readDataFile(this);
-    const projects = data.projects ?? [];
     const name = noteName.trim();
-    if (!name || projects.includes(name)) return;
-    await writeDataFile(this, {
-      gamification: data.gamification,
-      projects: [...projects, name].sort(),
-      reminders: data.reminders ?? [],
-      inbox: data.inbox ?? [],
-      trash: data.trash ?? [],
+    if (!name) return;
+    let added = false;
+    await updateDataFile(this, (d) => {
+      const projects = d.projects ?? [];
+      if (projects.includes(name)) return;
+      added = true;
+      d.projects = [...projects, name].sort();
     });
-    this.triggerDashboardRefresh();
+    if (added) this.triggerDashboardRefresh();
   }
 
+  /** Сохранить все настройки в data.json (через очередь записи, поверх остальных данных). */
   async saveSettings(): Promise<void> {
-    const raw = (await this.readDataFromDisk()) ?? (await this.loadData());
-    const currentData = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-    const {
-      enableGamification,
-      enableReminders,
-      enableInbox,
-      enableTasksDashboard,
-      enableTrash,
-      enablePluginRefresh,
-      enableDeadline,
-      enableDeadlineReminders,
-      deadlineReminderLeadDays,
-      enableStatusChangeComment,
-      environmentOptions,
-      contextOptions,
-      gamificationXpLevelBase,
-      gamificationDefaultDifficulty,
-      gamificationDifficultyRewards,
-      enableActivities,
-    } = this.settings;
-    const newData = {
-      ...currentData,
-      enableGamification,
-      enableReminders,
-      enableInbox,
-      enableTasksDashboard,
-      enableTrash,
-      enablePluginRefresh,
-      enableDeadline,
-      enableDeadlineReminders,
-      deadlineReminderLeadDays,
-      enableStatusChangeComment,
-      environmentOptions,
-      contextOptions,
-      gamificationXpLevelBase,
-      gamificationDefaultDifficulty,
-      gamificationDifficultyRewards,
-      enableActivities,
-    };
-    await this.saveData(newData);
+    await writeDataFile(this, { ...this.settings });
   }
 
   /** Обновить блоки дашборда (страницы проектов/дома). Вызывать после создания задачи. */
@@ -515,12 +467,7 @@ export class ObsidianProjectAutomationPlugin extends Plugin {
       this.activities.load();
     }
 
-    this.gamification?.updateState?.();
-    this.reminders?.updateState?.();
-    this.inbox?.updateState?.();
-    this.trash?.updateState?.();
-    this.tasksDashboard?.updateState?.();
-    this.activities?.updateState?.();
+    this.applySettings();
   }
 
   private unloadModule(module: PluginModule | null): void {
@@ -556,398 +503,6 @@ export class ObsidianProjectAutomationPlugin extends Plugin {
     this.trash?.updateState?.();
     this.tasksDashboard?.updateState?.();
     this.activities?.updateState?.();
-  }
-}
-
-class ObsidianProjectAutomationSettingTab extends PluginSettingTab {
-  constructor(app: App, private plugin: ObsidianProjectAutomationPlugin) {
-    super(app, plugin);
-  }
-
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-
-    containerEl.createEl("h2", { text: "Obsidian Project Automation" });
-
-    new Setting(containerEl).setName("Проекты и задачи");
-    const projectsWrap = containerEl.createDiv({ cls: "opa-settings-projects-wrap" });
-    projectsWrap.style.marginLeft = "1.2em";
-    projectsWrap.style.paddingLeft = "0.8em";
-
-    // Перечитываем data.json при открытии вкладки, чтобы в форме отображались актуальные contextOptions/environmentOptions
-    this.plugin.loadSettings().then(() => this.renderSettingsForm(containerEl, projectsWrap));
-  }
-
-  private renderSettingsForm(containerEl: HTMLElement, projectsWrap: HTMLElement): void {
-    new Setting(projectsWrap)
-      .setName("Окружения")
-      .setDesc("Варианты окружения через запятую (например: prod, dev)")
-      .addText((t) =>
-        t
-          .setPlaceholder("prod, dev")
-          .setValue(this.plugin.settings.environmentOptions ?? "")
-          .onChange(async (v) => {
-            this.plugin.settings.environmentOptions = v;
-            await this.plugin.saveSettings();
-          })
-      );
-    new Setting(projectsWrap)
-      .setName("Контексты")
-      .setDesc("Варианты контекста через запятую (например: личное, работа)")
-      .addText((t) =>
-        t
-          .setPlaceholder("личное, работа")
-          .setValue(this.plugin.settings.contextOptions ?? "")
-          .onChange(async (v) => {
-            this.plugin.settings.contextOptions = v;
-            await this.plugin.saveSettings();
-          })
-      );
-    new Setting(projectsWrap)
-      .setName("Пример шаблона задачи")
-      .setDesc("Создать файл templates/task-templates/task-example.md с примером шаблона")
-      .addButton((btn) =>
-        btn.setButtonText("Создать пример").onClick(() => this.plugin.noteTemplates?.createExampleTaskTemplate())
-      );
-    new Setting(projectsWrap)
-      .setName("Дедлайн")
-      .setDesc("Показывать поле дедлайн в проектах и доске задач")
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.enableDeadline ?? false).onChange(async (v) => {
-          this.plugin.settings.enableDeadline = v;
-          await this.plugin.saveSettings();
-          this.plugin.tasksDashboard?.scheduleRefresh();
-          this.display();
-        })
-      );
-    if (this.plugin.settings.enableDeadline) {
-      const deadlineWrap = projectsWrap.createDiv({ cls: "opa-settings-deadline-wrap" });
-      deadlineWrap.style.marginLeft = "1.2em";
-      deadlineWrap.style.paddingLeft = "0.8em";
-      new Setting(deadlineWrap)
-        .setName("Напоминание для дедлайна")
-        .setDesc("При создании задачи с дедлайном добавлять напоминание")
-        .addToggle((t) =>
-          t.setValue(this.plugin.settings.enableDeadlineReminders ?? true).onChange(async (v) => {
-            this.plugin.settings.enableDeadlineReminders = v;
-            await this.plugin.saveSettings();
-          })
-        );
-      const leadDaysSetting = new Setting(deadlineWrap)
-        .setName("За сколько дней напоминать")
-        .setDesc("За сколько дней до дедлайна срабатывает напоминание (0 — в день дедлайна)")
-        .addText((t) =>
-          t
-            .setPlaceholder("1")
-            .setValue(String(this.plugin.settings.deadlineReminderLeadDays ?? 1))
-            .onChange(async (v) => {
-              const n = parseInt(v, 10);
-              if (!Number.isNaN(n) && n >= 0) {
-                this.plugin.settings.deadlineReminderLeadDays = n;
-                await this.plugin.saveSettings();
-              }
-            })
-        );
-      leadDaysSetting.controlEl.addClass("opa-settings-lead-days");
-    }
-
-    new Setting(projectsWrap)
-      .setName("Комментарий при смене статуса задачи")
-      .setDesc("При смене статуса задачи предлагать указать причину (добавляется в раздел \"Описание задачи\")")
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.enableStatusChangeComment ?? false).onChange(async (v) => {
-          this.plugin.settings.enableStatusChangeComment = v;
-          await this.plugin.saveSettings();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("Доска задач")
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.enableTasksDashboard).onChange(async (v) => {
-          this.plugin.settings.enableTasksDashboard = v;
-          await this.plugin.saveSettings();
-          this.plugin.tasksDashboard?.updateState?.();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("Напоминания")
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.enableReminders).onChange(async (v) => {
-          this.plugin.settings.enableReminders = v;
-          this.plugin.settings.enableTrash =
-            this.plugin.settings.enableInbox || this.plugin.settings.enableReminders;
-          await this.plugin.saveSettings();
-          this.plugin.reminders?.updateState?.();
-          this.plugin.trash?.updateState?.();
-          this.plugin.inbox?.updateState?.();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("Блокнот")
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.enableInbox).onChange(async (v) => {
-          this.plugin.settings.enableInbox = v;
-          this.plugin.settings.enableTrash =
-            this.plugin.settings.enableInbox || this.plugin.settings.enableReminders;
-          await this.plugin.saveSettings();
-          this.plugin.inbox?.updateState?.();
-          this.plugin.trash?.updateState?.();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("Активности")
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.enableActivities ?? true).onChange(async (v) => {
-          this.plugin.settings.enableActivities = v;
-          await this.plugin.saveSettings();
-          this.plugin.activities?.updateState?.();
-        })
-      );
-
-    new Setting(containerEl)
-      .setName("Геймификация")
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.enableGamification).onChange(async (v) => {
-          this.plugin.settings.enableGamification = v;
-          await this.plugin.saveSettings();
-          this.plugin.gamification?.updateState?.();
-          this.display();
-        })
-      );
-
-    if (this.plugin.settings.enableGamification) {
-      const gamificationWrap = containerEl.createDiv({ cls: "opa-settings-gamification-wrap" });
-      gamificationWrap.style.marginLeft = "1.2em";
-      gamificationWrap.style.paddingLeft = "0.8em";
-
-      const rewards = this.plugin.settings.gamificationDifficultyRewards ?? DEFAULT_DIFFICULTY_REWARDS;
-      const saveRewards = async () => {
-        await this.plugin.saveSettings();
-        this.plugin.gamification?.updateState?.();
-      };
-      new Setting(gamificationWrap)
-        .setName("Базовый XP за уровень")
-        .setDesc(
-          "Определяет, как быстро растёт уровень от накопленного XP: уровень = 1 + √(суммарный XP ÷ базовый XP). Чем больше число, тем медленнее рост уровня."
-        )
-        .addText((t) =>
-          t
-            .setPlaceholder("20")
-            .setValue(String(this.plugin.settings.gamificationXpLevelBase ?? 20))
-            .onChange(async (v) => {
-              const n = parseInt(v, 10);
-              if (!isNaN(n) && n >= 1) this.plugin.settings.gamificationXpLevelBase = n;
-              await saveRewards();
-            })
-        );
-      new Setting(gamificationWrap)
-        .setName("Грейс-период для стрика (дней)")
-        .setDesc(
-          "Дополнительные дни после срока повторения, в которые выполнение ещё сохраняет стрик. 0 = в течение суток (до конца следующего дня по шагу повторения)."
-        )
-        .addText((t) =>
-          t
-            .setPlaceholder("0")
-            .setValue(String(this.plugin.settings.gamificationStreakGraceDays ?? 0))
-            .onChange(async (v) => {
-              const n = parseInt(v, 10);
-              if (!isNaN(n) && n >= 0) {
-                this.plugin.settings.gamificationStreakGraceDays = n;
-                await saveRewards();
-              }
-            })
-        );
-      const xpGoldHint = " Первое поле - XP, второе - Gold.";
-
-      const tasksSection = gamificationWrap.createDiv({ cls: "opa-settings-gamification-section" });
-      tasksSection.createEl("div", { cls: "opa-settings-section-title", text: "Награды за сложность (задачи)" });
-      new Setting(tasksSection)
-        .setName("Сложность по умолчанию")
-        .setDesc("Если у задачи не указана сложность")
-        .addDropdown((d) => {
-          d.addOption("легкая", DIFFICULTY_DISPLAY_LABELS.легкая)
-            .addOption("средняя", DIFFICULTY_DISPLAY_LABELS.средняя)
-            .addOption("сложная", DIFFICULTY_DISPLAY_LABELS.сложная)
-            .setValue(this.plugin.settings.gamificationDefaultDifficulty ?? "легкая")
-            .onChange(async (v) => {
-              this.plugin.settings.gamificationDefaultDifficulty = v;
-              await saveRewards();
-            });
-        });
-      const difficultyDesc: Record<"легкая" | "средняя" | "сложная", string> = {
-        легкая: "XP и Gold за выполнение задачи легкой сложности." + xpGoldHint,
-        средняя: "XP и Gold за выполнение задачи средней сложности." + xpGoldHint,
-        сложная: "XP и Gold за выполнение задачи тяжелой сложности." + xpGoldHint,
-      };
-      for (const key of ["легкая", "средняя", "сложная"] as const) {
-        const r = rewards[key] ?? { xp: 0, gold: 0 };
-        new Setting(tasksSection)
-          .setName(`Награда: ${DIFFICULTY_DISPLAY_LABELS[key]}`)
-          .setDesc(difficultyDesc[key])
-          .addText((t) =>
-            t
-              .setPlaceholder("XP (опыт)")
-              .setValue(String(r.xp))
-              .onChange(async (v) => {
-                const n = parseInt(v, 10);
-                if (!isNaN(n) && n >= 0) {
-                  if (!this.plugin.settings.gamificationDifficultyRewards) this.plugin.settings.gamificationDifficultyRewards = { ...DEFAULT_DIFFICULTY_REWARDS };
-                  const cur = this.plugin.settings.gamificationDifficultyRewards[key] ?? { xp: 0, gold: 0 };
-                  this.plugin.settings.gamificationDifficultyRewards[key] = { ...cur, xp: n };
-                  await saveRewards();
-                }
-              })
-          )
-          .addText((t) =>
-            t
-              .setPlaceholder("Gold")
-              .setValue(String(r.gold))
-              .onChange(async (v) => {
-                const n = parseInt(v, 10);
-                if (!isNaN(n) && n >= 0) {
-                  if (!this.plugin.settings.gamificationDifficultyRewards) this.plugin.settings.gamificationDifficultyRewards = { ...DEFAULT_DIFFICULTY_REWARDS };
-                  const cur = this.plugin.settings.gamificationDifficultyRewards[key] ?? { xp: 0, gold: 0 };
-                  this.plugin.settings.gamificationDifficultyRewards[key] = { ...cur, gold: n };
-                  await saveRewards();
-                }
-              })
-          );
-      }
-
-      const activitySection = gamificationWrap.createDiv({ cls: "opa-settings-gamification-section" });
-      activitySection.createEl("div", { cls: "opa-settings-section-title", text: "Награды за сложность (активности)" });
-      new Setting(activitySection)
-        .setName("Сложность по умолчанию")
-        .setDesc("Если у активности не указана сложность")
-        .addDropdown((d) => {
-          d.addOption("легкая", DIFFICULTY_DISPLAY_LABELS.легкая)
-            .addOption("средняя", DIFFICULTY_DISPLAY_LABELS.средняя)
-            .addOption("сложная", DIFFICULTY_DISPLAY_LABELS.сложная)
-            .setValue(this.plugin.settings.gamificationActivityDefaultDifficulty ?? "легкая")
-            .onChange(async (v) => {
-              this.plugin.settings.gamificationActivityDefaultDifficulty = v;
-              await saveRewards();
-            });
-        });
-      const activityRewards = this.plugin.settings.gamificationActivityDifficultyRewards ?? ACTIVITY_DIFFICULTY_REWARDS_DEFAULT;
-      const activityDifficultyDesc: Record<"легкая" | "средняя" | "сложная", string> = {
-        легкая: "XP и Gold за выполнение активности легкой сложности." + xpGoldHint,
-        средняя: "XP и Gold за выполнение активности средней сложности." + xpGoldHint,
-        сложная: "XP и Gold за выполнение активности тяжелой сложности." + xpGoldHint,
-      };
-      for (const key of ["легкая", "средняя", "сложная"] as const) {
-        const r = activityRewards[key] ?? { xp: 0, gold: 0 };
-        new Setting(activitySection)
-          .setName(`Награда: ${DIFFICULTY_DISPLAY_LABELS[key]}`)
-          .setDesc(activityDifficultyDesc[key])
-          .addText((t) =>
-            t
-              .setPlaceholder("XP")
-              .setValue(String(r.xp))
-              .onChange(async (v) => {
-                const n = parseInt(v, 10);
-                if (!isNaN(n) && n >= 0) {
-                  if (!this.plugin.settings.gamificationActivityDifficultyRewards) this.plugin.settings.gamificationActivityDifficultyRewards = { ...ACTIVITY_DIFFICULTY_REWARDS_DEFAULT };
-                  const cur = this.plugin.settings.gamificationActivityDifficultyRewards[key] ?? { xp: 0, gold: 0 };
-                  this.plugin.settings.gamificationActivityDifficultyRewards[key] = { ...cur, xp: n };
-                  await saveRewards();
-                }
-              })
-          )
-          .addText((t) =>
-            t
-              .setPlaceholder("Gold")
-              .setValue(String(r.gold))
-              .onChange(async (v) => {
-                const n = parseInt(v, 10);
-                if (!isNaN(n) && n >= 0) {
-                  if (!this.plugin.settings.gamificationActivityDifficultyRewards) this.plugin.settings.gamificationActivityDifficultyRewards = { ...ACTIVITY_DIFFICULTY_REWARDS_DEFAULT };
-                  const cur = this.plugin.settings.gamificationActivityDifficultyRewards[key] ?? { xp: 0, gold: 0 };
-                  this.plugin.settings.gamificationActivityDifficultyRewards[key] = { ...cur, gold: n };
-                  await saveRewards();
-                }
-              })
-          );
-      }
-
-      const fixedSection = gamificationWrap.createDiv({ cls: "opa-settings-gamification-section" });
-      fixedSection.createEl("div", { cls: "opa-settings-section-title", text: "Награды (напоминания и блокнот)" });
-      const reminderR = this.plugin.settings.gamificationReminderRewards ?? { xp: 2, gold: 1 };
-      new Setting(fixedSection)
-        .setName("Напоминание")
-        .setDesc("XP и Gold за выполнение напоминания." + xpGoldHint)
-        .addText((t) =>
-          t
-            .setPlaceholder("XP")
-            .setValue(String(reminderR.xp))
-            .onChange(async (v) => {
-              const n = parseInt(v, 10);
-              if (!isNaN(n) && n >= 0) {
-                if (!this.plugin.settings.gamificationReminderRewards) this.plugin.settings.gamificationReminderRewards = { xp: 2, gold: 1 };
-                this.plugin.settings.gamificationReminderRewards = { ...this.plugin.settings.gamificationReminderRewards, xp: n };
-                await saveRewards();
-              }
-            })
-        )
-        .addText((t) =>
-          t
-            .setPlaceholder("Gold")
-            .setValue(String(reminderR.gold))
-            .onChange(async (v) => {
-              const n = parseInt(v, 10);
-              if (!isNaN(n) && n >= 0) {
-                if (!this.plugin.settings.gamificationReminderRewards) this.plugin.settings.gamificationReminderRewards = { xp: 2, gold: 1 };
-                this.plugin.settings.gamificationReminderRewards = { ...this.plugin.settings.gamificationReminderRewards, gold: n };
-                await saveRewards();
-              }
-            })
-        );
-      const inboxR = this.plugin.settings.gamificationInboxRewards ?? { xp: 5, gold: 2 };
-      new Setting(fixedSection)
-        .setName("Блокнот")
-        .setDesc("XP и Gold за выполнение пункта в блокноте (отметка «Сделано»)." + xpGoldHint)
-        .addText((t) =>
-          t
-            .setPlaceholder("XP")
-            .setValue(String(inboxR.xp))
-            .onChange(async (v) => {
-              const n = parseInt(v, 10);
-              if (!isNaN(n) && n >= 0) {
-                if (!this.plugin.settings.gamificationInboxRewards) this.plugin.settings.gamificationInboxRewards = { xp: 5, gold: 2 };
-                this.plugin.settings.gamificationInboxRewards = { ...this.plugin.settings.gamificationInboxRewards, xp: n };
-                await saveRewards();
-              }
-            })
-        )
-        .addText((t) =>
-          t
-            .setPlaceholder("Gold")
-            .setValue(String(inboxR.gold))
-            .onChange(async (v) => {
-              const n = parseInt(v, 10);
-              if (!isNaN(n) && n >= 0) {
-                if (!this.plugin.settings.gamificationInboxRewards) this.plugin.settings.gamificationInboxRewards = { xp: 5, gold: 2 };
-                this.plugin.settings.gamificationInboxRewards = { ...this.plugin.settings.gamificationInboxRewards, gold: n };
-                await saveRewards();
-              }
-            })
-        );
-    }
-
-    new Setting(containerEl)
-      .setName("Refresh")
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.enablePluginRefresh).onChange(async (v) => {
-          this.plugin.settings.enablePluginRefresh = v;
-          await this.plugin.saveSettings();
-          this.plugin.tasksDashboard?.updateState?.();
-        })
-      );
   }
 }
 

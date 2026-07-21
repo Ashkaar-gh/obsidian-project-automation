@@ -24,6 +24,7 @@ export const UI_LABELS = {
     noTasks: "Нет задач.",
     noNotes: "Нет заметок.",
     ungrouped: "Задачи без группы",
+    noStatus: "Без статуса",
     columns: {
       task: "Задача",
       context: "Контекст",

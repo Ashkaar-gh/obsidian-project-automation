@@ -522,3 +522,8 @@
 .gamification-levelup-modal h3 {
     color: var(--interactive-accent);
 }
+
+.gamification-shop-tabs {
+  margin-top: 0.5rem;
+}
+

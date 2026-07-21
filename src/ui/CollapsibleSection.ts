@@ -46,8 +46,21 @@ export function createCollapsibleSection(
   };
 
   if (!useTextArrow) {
-    indicator.innerHTML =
-      '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svg-icon right-triangle"><path d="M6 9L12 15L18 9"></path></svg>';
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    svg.setAttribute("width", "24");
+    svg.setAttribute("height", "24");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.classList.add("svg-icon", "right-triangle");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M6 9L12 15L18 9");
+    svg.appendChild(path);
+    indicator.appendChild(svg);
   }
 
   const titleEl = header.createEl("h4", {
@@ -79,5 +92,47 @@ export function createCollapsibleSection(
   });
 
   return body;
+}
+
+export interface ToggleSectionOptions {
+  /** Иконка перед заголовком (например 🔥). */
+  icon?: string;
+  title: string;
+  count?: number;
+  collapsed: boolean;
+  onToggle: (collapsed: boolean) => void;
+  /** Классы для заголовка/списка (в дополнение к базовым). */
+  headerCls?: string;
+  listCls?: string;
+  /** Тег заголовка (по умолчанию h3). */
+  headerTag?: keyof HTMLElementTagNameMap;
+}
+
+/**
+ * Секция с заголовком-переключателем «▶/▼ Название (N)» и сворачиваемым списком.
+ * Используется в напоминаниях и блокноте (секции, архив, группы архива).
+ */
+export function createToggleSection(
+  parent: HTMLElement,
+  options: ToggleSectionOptions
+): { header: HTMLElement; list: HTMLElement } {
+  const header = parent.createEl(options.headerTag ?? "h3", {
+    cls: `opa-collapsible-header ${options.headerCls ?? "rv-section-header"}`,
+  });
+  const arrow = header.createEl("span", { cls: "rv-section-arrow", text: options.collapsed ? "▶" : "▼" });
+  const titleSpan = header.createEl("span", { cls: "rv-section-title-text" });
+  titleSpan.setText(options.icon ? `${options.icon} ${options.title}` : options.title);
+  if (options.count != null) {
+    header.createEl("span", { cls: "rv-count", text: String(options.count) });
+  }
+  const list = parent.createEl("div", { cls: options.listCls ?? "rv-list" });
+  list.toggleClass("opa-hidden", options.collapsed);
+  header.addEventListener("click", () => {
+    const collapsed = !list.hasClass("opa-hidden");
+    list.toggleClass("opa-hidden", collapsed);
+    arrow.textContent = collapsed ? "▶" : "▼";
+    options.onToggle(collapsed);
+  });
+  return { header, list };
 }
 

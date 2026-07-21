@@ -20,6 +20,8 @@ import { UI_LABELS } from "../ui/Labels";
  */
 
 type NoteType = "task" | "project" | "daily" | "from-template";
+type TaskContentTarget = "task" | "daily" | "both";
+type SplitTemplateContent = { taskBody: string; dailyBody: string };
 
 export interface TaskTemplateOption {
   key: string;
@@ -228,6 +230,7 @@ function extractPlaceholdersFromContent(content: string): string[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(content)) !== null) {
     const key = m[1].trim();
+    if (key.toLowerCase().startsWith("opa:")) continue;
     if (key && !STANDARD_PLACEHOLDERS.has(key)) set.add(key);
   }
   return [...set].sort();
@@ -357,12 +360,86 @@ function stripOpaFrontmatterFromContent(content: string): string {
   try {
     const fm = parseYaml(fmMatch[1]) as Record<string, unknown> | null;
     if (!fm || typeof fm !== "object") return content;
-    const { opa_labels: _l, opa_prompts: _p, opa_project: _proj, opa_group: _grp, ...rest } = fm;
+    const {
+      opa_labels: _l,
+      opa_prompts: _p,
+      opa_project: _proj,
+      opa_group: _grp,
+      opa_content_target: _contentTarget,
+      ...rest
+    } = fm;
     const newFm = stringifyYaml(rest).trimEnd();
     return content.replace(fmMatch[0], "---\n" + newFm + "\n---");
   } catch {
     return content;
   }
+}
+
+function splitFrontmatterAndBody(content: string): { frontmatter: string; body: string } {
+  const fmMatch = content.match(/^(---\r?\n[\s\S]*?\r?\n---)(\r?\n?[\s\S]*)$/);
+  if (!fmMatch) return { frontmatter: "", body: content };
+  return { frontmatter: fmMatch[1], body: fmMatch[2].replace(/^\r?\n/, "") };
+}
+
+function stripTaskViewBlocks(content: string): string {
+  const withoutTaskView = content.replace(/\n?```opa-task-view\s*\n```[\t ]*\n?/g, "\n");
+  return withoutTaskView.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function splitTemplateBodyByTarget(
+  body: string,
+  defaultTarget: TaskContentTarget
+): SplitTemplateContent {
+  const lines = body.split("\n");
+  let currentTarget: TaskContentTarget = defaultTarget;
+  const taskLines: string[] = [];
+  const dailyLines: string[] = [];
+
+  const legacyTargetByMarker: Record<string, TaskContentTarget | "default"> = {
+    "%%opa:task%%": "task",
+    "%%opa:daily%%": "daily",
+    "%%opa:both%%": "both",
+    "%%opa:default%%": "default",
+  };
+
+  const parseMarker = (line: string): TaskContentTarget | "default" | null => {
+    const normalized = line.trim().toLowerCase();
+    if (legacyTargetByMarker[normalized]) return legacyTargetByMarker[normalized];
+    const htmlMarker = normalized.match(/^<!--\s*opa:(task|daily|both|default)\s*-->$/);
+    if (!htmlMarker) return null;
+    const mode = htmlMarker[1];
+    if (mode === "task" || mode === "daily" || mode === "both" || mode === "default") return mode;
+    return null;
+  };
+
+  for (const line of lines) {
+    const markerTarget = parseMarker(line);
+    if (markerTarget) {
+      currentTarget = markerTarget === "default" ? defaultTarget : markerTarget;
+      continue;
+    }
+
+    if (currentTarget === "task" || currentTarget === "both") taskLines.push(line);
+    if (currentTarget === "daily" || currentTarget === "both") dailyLines.push(line);
+  }
+
+  const normalize = (value: string): string => value.replace(/\n{3,}/g, "\n\n").trim();
+  return {
+    taskBody: normalize(taskLines.join("\n")),
+    dailyBody: normalize(dailyLines.join("\n")),
+  };
+}
+
+function parseTaskContentTargetFromTemplate(content: string): TaskContentTarget {
+  const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!fmMatch) return "task";
+  try {
+    const fm = parseYaml(fmMatch[1]) as Record<string, unknown> | null;
+    const raw = fm?.opa_content_target;
+    const value = raw != null ? String(raw).trim().toLowerCase() : "";
+    if (value === "task" || value === "daily" || value === "both") return value;
+  } catch {}
+  return "task";
 }
 
 /** Удаляет блоки Templater (<%* ... %>, <% ... %> и т.д.), чтобы они не попадали в заметку как текст. */
@@ -448,12 +525,6 @@ class MultiSelectModal extends Modal {
       this.onConfirm(value);
       this.close();
     };
-    this.modalEl.addEventListener("keydown", (evt) => {
-      if (evt.key === "Enter") {
-        evt.preventDefault();
-        okBtn.click();
-      }
-    });
   }
 }
 
@@ -763,13 +834,13 @@ class DailyHeadingDateModal extends Modal {
 
     const steppers = [dayStepper, monthStepper, yearStepper];
     this.keydownHandler = (e: KeyboardEvent) => {
-      if (e.key === "Enter" && steppers.includes(document.activeElement as HTMLElement)) {
+      if (e.key === "Enter" && steppers.includes(document.activeElement as typeof steppers[number])) {
         e.preventDefault();
         doConfirm();
         return;
       }
       if (e.key === "Tab") {
-        const idx = steppers.indexOf(document.activeElement as HTMLElement);
+        const idx = steppers.indexOf(document.activeElement as typeof steppers[number]);
         if (idx >= 0) {
           e.preventDefault();
           const next = e.shiftKey ? (idx - 1 + 3) % 3 : (idx + 1) % 3;
@@ -777,7 +848,7 @@ class DailyHeadingDateModal extends Modal {
         }
         return;
       }
-      const focusedIdx = steppers.indexOf(document.activeElement as HTMLElement);
+      const focusedIdx = steppers.indexOf(document.activeElement as typeof steppers[number]);
       if (focusedIdx < 0) return;
       const delta = e.key === "ArrowLeft" || e.key === "ArrowDown" ? -1 : e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : 0;
       if (delta === 0) return;
@@ -818,7 +889,7 @@ class CreateTaskModal extends Modal {
   private dateChosen = "";
   private difficulty = "Легко";
   /** Статус задачи: пустая строка = без статуса. */
-  private status = UI_LABELS.tasks.defaultStatus;
+  private status: string = UI_LABELS.tasks.defaultStatus;
   private group = "";
   private templateKey = "task";
   private dailyHeadingMode: "today" | "choose" | "none" = "today";
@@ -1078,7 +1149,6 @@ class CreateTaskModal extends Modal {
     new Setting(form)
       .setName("Статус задачи")
       .addDropdown((d) => {
-        d.addOption("", "-");
         for (const { value, label } of getDropdownOptions()) {
           d.addOption(value, label);
         }
@@ -1156,7 +1226,7 @@ class CreateTaskModal extends Modal {
         modal.open();
       } else {
         this.dailyHeadingMode = newMode;
-        if (newMode !== "choose") this.dailyHeadingDate = "";
+        this.dailyHeadingDate = "";
         lastMode = newMode;
         headingSummary.setText(getHeadingSummary());
       }
@@ -1269,9 +1339,9 @@ export class NoteTemplatesModule {
       const folder = Paths.DAILY_FOLDER.replace(/\/?$/, "");
       if (!file.path.startsWith(folder + "/") || !DAILY_FILENAME_REGEX.test(file.name)) return;
       const dateStr = file.basename;
-      setTimeout(async () => {
+      window.setTimeout(async () => {
         try {
-          const content = await this.ctx.app.vault.read(file);
+          const content = await this.ctx.app.vault.cachedRead(file);
           if (content.includes("%%daily_nav%%")) {
             const resolved = content.replace(/%%daily_nav%%/g, buildDailyNavLine(dateStr));
             await this.ctx.app.vault.modify(file, resolved);
@@ -1280,10 +1350,18 @@ export class NoteTemplatesModule {
           if (content.trim() !== "") return;
           const newContent = await this.getDailyNoteContentForDate(dateStr);
           await this.ctx.app.vault.modify(file, newContent);
-        } catch {}
+        } catch (e) {
+          console.error("[OPA] daily create handler:", e);
+        }
       }, 0);
     };
-    this.ctx.app.vault.on("create", this.onDailyCreated);
+    this.ctx.app.workspace.onLayoutReady(() => {
+      if (!this.onDailyCreated) return;
+      const vault = this.ctx.app.vault as unknown as {
+        on(e: "create", cb: (f: TFile) => void): import("obsidian").EventRef;
+      };
+      this.ctx.plugin.registerEvent(vault.on("create", this.onDailyCreated));
+    });
 
     this.ctx.plugin.addCommand({
       id: "create-task-or-project",
@@ -1311,10 +1389,8 @@ export class NoteTemplatesModule {
   }
 
   unload(): void {
-    if (this.onDailyCreated) {
-      this.ctx.app.vault.off("create", this.onDailyCreated);
-      this.onDailyCreated = null;
-    }
+    // Событие create зарегистрировано через registerEvent — снимается автоматически.
+    this.onDailyCreated = null;
   }
 
   private async ensureFolderExists(folderPath: string): Promise<void> {
@@ -1416,7 +1492,7 @@ export class NoteTemplatesModule {
 
   private async createFromTemplate(templatePath: string, name: string): Promise<void> {
     const file = this.ctx.app.vault.getAbstractFileByPath(templatePath);
-    if (!file) {
+    if (!(file instanceof TFile)) {
       new Notice("Шаблон не найден: " + templatePath);
       return;
     }
@@ -1424,21 +1500,26 @@ export class NoteTemplatesModule {
     content = content.replace(/%%projectName%%/g, name).replace(/%%project%%/g, name);
     const safeName = name.replace(/[/\\]/g, "-") + ".md";
     const path = safeName;
-    const created = await this.ctx.app.vault.create(path, content);
-    new Notice(`Создана заметка: ${name}`);
-    await this.ctx.app.workspace.getLeaf(true).openFile(created);
+    try {
+      const created = await this.ctx.app.vault.create(path, content);
+      new Notice(`Создана заметка: ${name}`);
+      await this.ctx.app.workspace.getLeaf(true).openFile(created);
+    } catch (e) {
+      console.error(e);
+      new Notice(`Не удалось создать заметку «${name}» (файл уже существует?)`);
+    }
   }
 
   private async getTaskTemplateContent(key: string): Promise<string> {
     if (key === "task") {
       const file = this.ctx.app.vault.getAbstractFileByPath(Paths.TASK_TEMPLATE_PATH);
-      if (file) return await this.ctx.app.vault.read(file);
+      if (file instanceof TFile) return await this.ctx.app.vault.cachedRead(file);
       return DEFAULT_TASK;
     }
     const path = `${Paths.TASK_TEMPLATES_FOLDER}/${key}.md`;
     const file = this.ctx.app.vault.getAbstractFileByPath(path);
-    if (!file) return "";
-    return await this.ctx.app.vault.read(file);
+    if (!(file instanceof TFile)) return "";
+    return await this.ctx.app.vault.cachedRead(file);
   }
 
   /** Одно значение — как есть; несколько через запятую — YAML-массив для фронтматтера (project, context, environment). */
@@ -1454,13 +1535,13 @@ export class NoteTemplatesModule {
 
   private async getProjectTemplateContent(): Promise<string> {
     const file = this.ctx.app.vault.getAbstractFileByPath(Paths.PROJECT_TEMPLATE_PATH);
-    if (file) return await this.ctx.app.vault.read(file);
+    if (file instanceof TFile) return await this.ctx.app.vault.cachedRead(file);
     return DEFAULT_PROJECT;
   }
 
   private async getDailyTemplateContent(): Promise<string> {
     const file = this.ctx.app.vault.getAbstractFileByPath(Paths.DAILY_TEMPLATE_PATH);
-    if (file) return await this.ctx.app.vault.read(file);
+    if (file instanceof TFile) return await this.ctx.app.vault.cachedRead(file);
     return DEFAULT_DAILY;
   }
 
@@ -1486,6 +1567,7 @@ export class NoteTemplatesModule {
       return;
     }
     if (!content) content = DEFAULT_TASK;
+    const contentTarget = parseTaskContentTargetFromTemplate(content);
     content = content
       .replace(/%%project%%/g, this.formatYamlList(p.project))
       .replace(/%%context%%/g, this.formatYamlList(p.context))
@@ -1518,16 +1600,37 @@ export class NoteTemplatesModule {
       }
     }
     content = content.replace(/```dataviewjs[\s\S]*?```/g, "```opa-task-view\n```");
-    content = removeLinesWithUnfilledPlaceholders(content);
-    content = stripOpaFrontmatterFromContent(content);
+    const { frontmatter, body } = splitFrontmatterAndBody(content);
+    const splitBodies = splitTemplateBodyByTarget(body, contentTarget);
+    const taskBodyContent = removeLinesWithUnfilledPlaceholders(splitBodies.taskBody).trim();
+    const dailyBodyContent = stripTaskViewBlocks(
+      removeLinesWithUnfilledPlaceholders(splitBodies.dailyBody)
+    );
+    const shouldWriteTaskBody = taskBodyContent.length > 0;
+    const shouldWriteDailyBody = dailyBodyContent.length > 0;
 
     const safeName = p.name.replace(/[/\\]/g, "-") + ".md";
     const path = safeName;
-    const file = await this.ctx.app.vault.create(path, content);
+    const taskFileRawContent = shouldWriteTaskBody
+      ? `${frontmatter}${taskBodyContent ? `\n${taskBodyContent}\n` : "\n"}`
+      : `${frontmatter}\n`;
+    const taskFileContent = stripOpaFrontmatterFromContent(taskFileRawContent);
+    const file = await this.ctx.app.vault.create(path, taskFileContent);
     new Notice(`Создана задача: ${p.name}`);
     await this.ctx.app.workspace.getLeaf(true).openFile(file);
+    if (p.status.trim().toLowerCase() === "готово") {
+      this.ctx.eventBus.emit("task:completed", {
+        path: file.path,
+        difficulty: p.difficulty?.trim() ? p.difficulty : null,
+      });
+    }
     this.ctx.plugin.tasksDashboard?.scheduleRefresh();
-    await this.ensureDailyHeading(p.name, p.dailyHeadingMode, p.dailyHeadingDate);
+    await this.ensureDailyHeading(
+      p.name,
+      p.dailyHeadingMode,
+      p.dailyHeadingDate,
+      shouldWriteDailyBody ? dailyBodyContent : ""
+    );
     if (
       enableDeadline &&
       p.deadline?.trim() &&
@@ -1588,7 +1691,8 @@ export class NoteTemplatesModule {
   private async ensureDailyHeading(
     taskName: string,
     mode: "today" | "choose" | "none",
-    dateStr: string
+    dateStr: string,
+    sectionContent = ""
   ): Promise<void> {
     if (mode === "none") return;
 
@@ -1617,7 +1721,12 @@ export class NoteTemplatesModule {
 
     const headingToAdd = `### [[${taskName}]]`;
     const dailyNoteContent = await this.ctx.app.vault.read(file);
-    if (dailyNoteContent.includes(headingToAdd)) return;
+    if (dailyNoteContent.includes(headingToAdd)) {
+      if (sectionContent.trim()) {
+        await this.upsertDailySectionContent(file, headingToAdd, sectionContent);
+      }
+      return;
+    }
 
     let prefix = "";
     const trimmedContent = dailyNoteContent.trim();
@@ -1637,7 +1746,34 @@ export class NoteTemplatesModule {
       }
     }
 
-    await this.ctx.app.vault.modify(file, dailyNoteContent + `${prefix}${headingToAdd}\n`);
+    const headingBlock = sectionContent.trim()
+      ? `${headingToAdd}\n${sectionContent.trim()}\n`
+      : `${headingToAdd}\n`;
+    await this.ctx.app.vault.modify(file, dailyNoteContent + `${prefix}${headingBlock}`);
+  }
+
+  private async upsertDailySectionContent(
+    file: TFile,
+    heading: string,
+    sectionContent: string
+  ): Promise<void> {
+    const normalizedSection = sectionContent.trim();
+    if (!normalizedSection) return;
+    const dailyNoteContent = await this.ctx.app.vault.read(file);
+    const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const sectionRegex = new RegExp(
+      `(^|\\n)${escapedHeading}\\n([\\s\\S]*?)(?=\\n###\\s|$)`,
+      "m"
+    );
+    const match = dailyNoteContent.match(sectionRegex);
+    if (!match) return;
+    const existingSectionBody = (match[2] ?? "").trim();
+    if (existingSectionBody.length > 0) return;
+
+    const replacement = `${match[1]}${heading}\n${normalizedSection}\n`;
+    const updatedContent = dailyNoteContent.replace(sectionRegex, replacement);
+    if (updatedContent === dailyNoteContent) return;
+    await this.ctx.app.vault.modify(file, updatedContent);
   }
 
   private async createDailyNote(): Promise<void> {
@@ -1645,7 +1781,7 @@ export class NoteTemplatesModule {
     const folder = Paths.DAILY_FOLDER.replace(/\/?$/, "");
     const path = `${folder}/${dateStr}.md`;
     const existing = this.ctx.app.vault.getAbstractFileByPath(path);
-    if (existing) {
+    if (existing instanceof TFile) {
       await this.ctx.app.workspace.getLeaf(true).openFile(existing);
       new Notice("Ежедневная заметка уже существует.");
       return;

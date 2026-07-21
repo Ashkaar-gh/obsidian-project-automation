@@ -183,6 +183,24 @@ export function completedLineWithoutRecurrence(line: string, recurrenceFull: str
   return line.replace(recurrenceFull, "").trimEnd();
 }
 
+/**
+ * Строка следующего вхождения для выполненного повторяющегося напоминания:
+ * дата = сейчас + период, текст без старого тега даты.
+ */
+export function buildNextRecurrenceLine(parsed: {
+  indent: string;
+  textPrefix: string;
+  textSuffix: string;
+  amount: number;
+  unit: string;
+}): string {
+  const nextDate = addRecurrencePeriod(new Date(), parsed.amount, parsed.unit);
+  const recurrenceStr = `every ${parsed.amount} ${parsed.unit}`;
+  const dateTag = formatReminderDateTag(nextDate);
+  const textClean = (parsed.textPrefix + parsed.textSuffix).replace(REMINDER_DATE_TAG_REGEX, "").trim();
+  return buildRecurrenceTaskLine(parsed.indent, textClean, recurrenceStr, dateTag);
+}
+
 export type ReminderItemType = "overdue" | "today" | "tomorrow" | "upcoming" | "completed";
 
 export interface ReminderItem {

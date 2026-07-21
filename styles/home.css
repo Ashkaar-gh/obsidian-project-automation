@@ -499,3 +499,10 @@
 .opa-collapse-indicator.is-collapsed svg {
     transform: rotate(-90deg);
 }
+
+/* Уменьшенные стрелки для вложенных групп в Архиве (напоминания) */
+.rv-archive-group-header .rv-section-arrow {
+    font-size: 0.6em;
+    width: 10px;
+    opacity: 0.5;
+}

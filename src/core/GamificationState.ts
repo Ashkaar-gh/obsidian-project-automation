@@ -160,7 +160,53 @@ export interface DataStorage {
   saveData(data: unknown): Promise<void>;
 }
 
+/**
+ * Очередь записи data.json: все мутации выполняются последовательно,
+ * иначе конкурентные read-modify-write теряют данные (двойные награды, пропавшие записи).
+ */
+const writeQueues = new WeakMap<DataStorage, Promise<unknown>>();
+
+function enqueueWrite<T>(storage: DataStorage, job: () => Promise<T>): Promise<T> {
+  const prev = writeQueues.get(storage) ?? Promise.resolve();
+  const next = prev.then(job, job);
+  writeQueues.set(
+    storage,
+    next.catch(() => undefined)
+  );
+  return next;
+}
+
+/**
+ * Атомарное изменение data.json: читает актуальные данные, применяет мутатор
+ * и сохраняет результат — всё внутри очереди записи.
+ * Мутатор возвращает патч (изменённые поля) или мутирует данные и возвращает void.
+ */
+export function updateDataFile(
+  storage: DataStorage,
+  mutator: (data: PluginDataFile) => Partial<PluginDataFile> | void
+): Promise<void> {
+  return enqueueWrite(storage, async () => {
+    const data = await readDataFileUnsafe(storage);
+    const patch = mutator(data) ?? data;
+    await mergeAndSave(storage, patch as Record<string, unknown>);
+  });
+}
+
+async function mergeAndSave(storage: DataStorage, payload: Record<string, unknown>): Promise<void> {
+  const raw = ((await storage.loadData()) as Record<string, unknown>) || {};
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (value !== undefined) cleaned[key] = value;
+  }
+  await storage.saveData({ ...raw, ...cleaned });
+}
+
 export async function readDataFile(storage: DataStorage): Promise<PluginDataFile> {
+  return readDataFileUnsafe(storage);
+}
+
+/** Чтение без очереди (внутри очереди используется напрямую). */
+async function readDataFileUnsafe(storage: DataStorage): Promise<PluginDataFile> {
   try {
     const data = (await storage.loadData()) as Record<string, unknown> | null;
     if (!data || typeof data !== "object") return { projects: [], reminders: [], inbox: [], trash: [], inboxArchive: [], activities: { items: [], history: {} } };
@@ -257,10 +303,12 @@ function parseActivitiesData(raw: unknown): ActivitiesData {
   return { items, history, rewardsGiven: Object.keys(rewardsGiven).length ? rewardsGiven : undefined };
 }
 
-export async function writeDataFile(storage: DataStorage, payload: PluginDataFile): Promise<void> {
-  const data = ((await storage.loadData()) as Record<string, unknown>) || {};
-  const merged = { ...data, ...payload };
-  await storage.saveData(merged);
+/** Записать поля в data.json (через очередь), не трогая остальные ключи. */
+export function writeDataFile(
+  storage: DataStorage,
+  payload: Partial<PluginDataFile> | Record<string, unknown>
+): Promise<void> {
+  return enqueueWrite(storage, () => mergeAndSave(storage, payload as Record<string, unknown>));
 }
 
 function parseStateFromRaw(data: unknown): GamificationState {
@@ -314,10 +362,8 @@ export async function readState(storage: DataStorage): Promise<GamificationState
   }
 }
 
-export async function writeState(storage: DataStorage, state: GamificationState): Promise<void> {
-  const data = ((await storage.loadData()) as Record<string, unknown>) || {};
-  data.gamification = state;
-  await storage.saveData(data);
+export function writeState(storage: DataStorage, state: GamificationState): Promise<void> {
+  return writeDataFile(storage, { gamification: state });
 }
 
 export function getRewardForDifficulty(

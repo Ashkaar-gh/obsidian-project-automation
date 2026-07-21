@@ -126,6 +126,12 @@ table.pv-table {
     min-height: 0 !important;
 }
 
+.pv-total-summary {
+    margin-bottom: 5px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
 .pv-group-title {
     display: flex;
     align-items: center;

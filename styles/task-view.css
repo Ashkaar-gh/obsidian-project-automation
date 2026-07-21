@@ -1,4 +1,4 @@
-/* Task view: редактирование секций, оглавление, группы, кнопка копирования, embed-блоки, скролл-якоря, подсветка. */
+/* Task view: редактирование секций, оглавление, группы, embed-блоки, скролл-якоря, подсветка. */
 
 /* Убрать серую рамку при наведении (режим чтения). */
 .opa-task-view,
@@ -101,6 +101,11 @@
     box-sizing: border-box;
 }
 
+.task-view-entry .markdown-embed-content {
+    margin: 0;
+    padding: 0;
+}
+
 .task-view-entry .markdown-preview-view {
     margin: 0;
     padding: 0;
@@ -108,12 +113,10 @@
 
 .task-view-display pre,
 .task-view-display .markdown-preview-section pre {
-    margin-top: 0;
-    margin-bottom: 1em;
     position: relative;
-    background-color: var(--background-secondary);
-    border-radius: 6px;
-    padding: 1em 1.2em;
+    background-color: var(--code-background, var(--background-secondary));
+    border-radius: var(--code-radius, 6px);
+    padding: var(--size-4-3, 1em) var(--size-4-4, 1.2em);
     overflow-x: auto;
 }
 
@@ -123,64 +126,56 @@
     padding: 0;
 }
 
-.task-view-display *:has(+ pre),
-.task-view-display .markdown-preview-section *:has(+ pre) {
-    margin-bottom: 0;
+/* Учитываем перенос строки после блока кода (атрибуты дублируются на div-обёртку — Prism сбрасывает их на pre) */
+[data-task-view-content="1"] .task-view-display pre[data-after-blank="0"],
+[data-task-view-content="1"] .task-view-display .markdown-preview-section pre[data-after-blank="0"],
+[data-task-view-content="1"] .task-view-display > div:has(> pre[data-after-blank="0"]),
+[data-task-view-content="1"] .task-view-display .markdown-preview-section > div:has(> pre[data-after-blank="0"]),
+[data-task-view-content="1"] .task-view-display div[data-after-blank="0"]:has(> pre),
+[data-task-view-content="1"] .task-view-display .markdown-preview-section div[data-after-blank="0"]:has(> pre) {
+    margin-bottom: 0 !important;
+    margin-block-end: 0 !important;
 }
 
-/* Убираем отступы ТОЛЬКО если в исходнике текст шел слитно без пустой строки */
-.task-view-display pre[data-after-blank="0"],
-.task-view-display .markdown-preview-section pre[data-after-blank="0"] {
-    margin-bottom: 0;
+/* Элемент сразу после блока кода без пустой строки — убираем его margin-top (иначе p/div получают лишний 1rem) */
+[data-task-view-content="1"] .task-view-display pre[data-after-blank="0"] + *,
+[data-task-view-content="1"] .task-view-display .markdown-preview-section pre[data-after-blank="0"] + *,
+[data-task-view-content="1"] .task-view-display > div:has(> pre[data-after-blank="0"]) + *,
+[data-task-view-content="1"] .task-view-display .markdown-preview-section > div:has(> pre[data-after-blank="0"]) + *,
+[data-task-view-content="1"] .task-view-display div[data-after-blank="0"]:has(> pre) + *,
+[data-task-view-content="1"] .task-view-display .markdown-preview-section div[data-after-blank="0"]:has(> pre) + * {
+    margin-top: 0 !important;
+    margin-block-start: 0 !important;
 }
 
-.task-view-display pre[data-after-blank="0"] + *,
-.task-view-display .markdown-preview-section pre[data-after-blank="0"] + * {
-    margin-top: 0;
+[data-task-view-content="1"] .task-view-display pre[data-after-blank="1"],
+[data-task-view-content="1"] .task-view-display .markdown-preview-section pre[data-after-blank="1"],
+[data-task-view-content="1"] .task-view-display > div:has(> pre[data-after-blank="1"]),
+[data-task-view-content="1"] .task-view-display .markdown-preview-section > div:has(> pre[data-after-blank="1"]),
+[data-task-view-content="1"] .task-view-display div[data-after-blank="1"]:has(> pre),
+[data-task-view-content="1"] .task-view-display .markdown-preview-section div[data-after-blank="1"]:has(> pre) {
+    margin-bottom: 1em !important;
 }
 
-.task-view-display .copy-code-button {
-    display: none !important;
+/* Слитный текст + код в ежедневнике: без лишнего зазора; с пустой строкой — селекторы ниже не срабатывают */
+[data-task-view-content="1"] .task-view-display p:has(+ pre[data-before-blank="0"]),
+[data-task-view-content="1"] .task-view-display .markdown-preview-section p:has(+ pre[data-before-blank="0"]),
+[data-task-view-content="1"] .task-view-display p:has(+ div[data-before-blank="0"]),
+[data-task-view-content="1"] .task-view-display .markdown-preview-section p:has(+ div[data-before-blank="0"]),
+[data-task-view-content="1"] .task-view-display div:has(> p):has(+ pre[data-before-blank="0"]),
+[data-task-view-content="1"] .task-view-display .markdown-preview-section div:has(> p):has(+ pre[data-before-blank="0"]),
+[data-task-view-content="1"] .task-view-display div:has(> p):has(+ div[data-before-blank="0"]),
+[data-task-view-content="1"] .task-view-display .markdown-preview-section div:has(> p):has(+ div[data-before-blank="0"]) {
+    margin-bottom: 0 !important;
+    margin-block-end: 0 !important;
 }
 
-.task-view-copy-btn {
-    position: absolute;
-    top: 4px;
-    right: 4px;
-    z-index: 5;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    border: none;
-    border-radius: 3px;
-    background: var(--background-primary);
-    color: var(--text-muted);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    opacity: 0;
-    transition: opacity 0.15s;
-    box-shadow: 0 0 0 1px var(--background-modifier-border);
-}
-
-.task-view-display pre:hover .task-view-copy-btn,
-.task-view-copy-btn.copied {
-    opacity: 1;
-}
-
-.task-view-copy-btn:hover {
-    background: var(--background-modifier-hover);
-    color: var(--text-normal);
-}
-
-.task-view-copy-btn.copied {
-    color: var(--text-success);
-}
-
-.task-view-copy-btn svg {
-    width: 14px;
-    height: 14px;
+[data-task-view-content="1"] .task-view-display pre[data-before-blank="0"],
+[data-task-view-content="1"] .task-view-display .markdown-preview-section pre[data-before-blank="0"],
+[data-task-view-content="1"] .task-view-display div[data-before-blank="0"]:has(> pre),
+[data-task-view-content="1"] .task-view-display .markdown-preview-section div[data-before-blank="0"]:has(> pre) {
+    margin-top: 0 !important;
+    margin-block-start: 0 !important;
 }
 
 .task-toc-list {
@@ -241,8 +236,7 @@
 }
 
 .block-language-dataviewjs a,
-.block-language-dataviewjs button,
-.block-language-dataviewjs .task-view-copy-btn {
+.block-language-dataviewjs button {
     cursor: pointer !important;
 }
 
@@ -269,6 +263,7 @@
 [data-task-view-content="1"] .task-view-display .markdown-preview-section h5,
 [data-task-view-content="1"] .task-view-display .markdown-preview-section h6 {
     margin-bottom: 0 !important;
+    margin-block-end: 0 !important;
 }
 
 [data-task-view-content="1"] .task-view-display h1[data-after-blank="0"] + *,
@@ -284,6 +279,7 @@
 [data-task-view-content="1"] .task-view-display .markdown-preview-section h5[data-after-blank="0"] + *,
 [data-task-view-content="1"] .task-view-display .markdown-preview-section h6[data-after-blank="0"] + * {
     margin-top: 0 !important;
+    margin-block-start: 0 !important;
 }
 
 [data-task-view-content="1"] .task-view-display h1[data-after-blank="1"],
@@ -299,6 +295,7 @@
 [data-task-view-content="1"] .task-view-display .markdown-preview-section h5[data-after-blank="1"],
 [data-task-view-content="1"] .task-view-display .markdown-preview-section h6[data-after-blank="1"] {
     margin-bottom: 0.75em !important;
+    margin-block-end: 0.75em !important;
 }
 
 .target-highlight {
@@ -322,7 +319,12 @@
     transition: width 0.1s ease-out;
     position: relative;
     width: fit-content;
-    max-width: 100%;
+    /* Уменьшаем ширину на 8px, чтобы компенсировать отступы */
+    max-width: calc(100% - 8px) !important;
+    /* Добавляем отступы, чтобы окантовка помещалась */
+    margin-left: 4px;
+    margin-top: 4px;
+    margin-bottom: 4px;
 }
 
 .task-view-display .internal-embed:has(img):hover img {

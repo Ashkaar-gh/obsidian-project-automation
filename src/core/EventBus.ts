@@ -28,5 +28,3 @@ export class EventBus {
     this.listeners.get(event)?.forEach((fn) => fn(payload));
   }
 }
-
-export const eventBus = new EventBus();

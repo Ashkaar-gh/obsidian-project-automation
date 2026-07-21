@@ -4,12 +4,12 @@ import { read } from "../core/FileIO";
 import { readDataFile, writeDataFile, isInboxArchiveTrashEntry, getTrashDisplayText } from "../core/GamificationState";
 import { UI_LABELS } from "../ui/Labels";
 import { createCollapsibleSection } from "../ui/CollapsibleSection";
+import { BlockRegistry } from "../ui/BlockRegistry";
 import { Notice } from "obsidian";
 
 export class TrashModule {
   private ctx: ModuleContext;
-  private blocks = new Set<{ el: HTMLElement; refresh: () => void }>();
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private registry: BlockRegistry;
   private rendering = new Set<HTMLElement>();
 
   private getDataPath(): string {
@@ -18,89 +18,41 @@ export class TrashModule {
 
   constructor(ctx: ModuleContext) {
     this.ctx = ctx;
+    this.registry = new BlockRegistry({
+      app: ctx.app,
+      isEnabled: () => ctx.plugin.settings.enableTrash,
+      domSelector: ".opa-trash-view",
+      createRefresh: (el) => () => this.render(el),
+    });
   }
 
   load(): void {
-    this.ctx.app.metadataCache.on("changed", this.onChange);
-    this.ctx.app.vault.on("modify", this.onChange);
-    this.ctx.app.workspace.on("active-leaf-change", this.onLeafChange);
+    const { plugin, app } = this.ctx;
+    plugin.registerEvent(app.vault.on("modify", this.onChange));
+    plugin.registerEvent(app.workspace.on("active-leaf-change", this.registry.scheduleRefresh));
 
-    this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-trash-view", (_source, el) => {
+    plugin.registerMarkdownCodeBlockProcessor("opa-trash-view", (_source, el) => {
       el.addClass("opa-trash-view");
-      this.blocks.forEach((b) => { if (b.el === el) this.blocks.delete(b); });
-      const refresh = () => this.render(el);
-      this.blocks.add({ el, refresh });
-      this.render(el);
+      this.registry.register(el, () => this.render(el));
     });
   }
 
-  /** Есть ли хотя бы один блок корзины в активной вкладке. */
-  private isAnyBlockVisible(): boolean {
-    const container = this.ctx.app.workspace.activeLeaf?.view?.containerEl;
-    if (!container) return false;
-    for (const b of this.blocks) {
-      if (b.el.isConnected && container.contains(b.el)) return true;
-    }
-    return false;
-  }
-
-  /** Обновить все открытые блоки (в т.ч. на фоновых вкладках). */
-  private runRefresh(): void {
-    this.blocks.forEach((b) => {
-      if (b.el.isConnected) b.refresh();
-    });
-
-    if (this.blocks.size > 30) {
-      const stale = Array.from(this.blocks).filter((b) => !b.el.isConnected);
-      for (let i = 0; i < stale.length - 10; i++) {
-        this.blocks.delete(stale[i]);
-      }
-    }
-  }
-
-  private onLeafChange = (): void => {
-    if (!this.ctx.plugin.settings.enableTrash) return;
-    if (!this.isAnyBlockVisible()) return;
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => {
-      this.debounceTimer = null;
-      if (!this.isAnyBlockVisible()) return;
-      this.runRefresh();
-    }, 300);
-  };
-
-  private onChange = (...data: unknown[]): void => {
-    if (!this.ctx.plugin.settings.enableTrash) return;
-    const _file = data[0] as { path?: string } | undefined;
-    if (_file?.path && _file.path !== this.getDataPath()) return;
-    if (!this.isAnyBlockVisible()) return;
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => {
-      this.debounceTimer = null;
-      if (!this.isAnyBlockVisible()) return;
-      this.runRefresh();
-    }, 300);
+  private onChange = (file: { path?: string }): void => {
+    if (file?.path && file.path !== this.getDataPath()) return;
+    this.registry.scheduleRefresh();
   };
 
   /** Принудительное обновление блоков корзины (вызов после добавления в Trash из других модулей). */
   forceRefresh(): void {
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    this.runRefresh();
+    this.registry.forceRefresh();
   }
 
   unload(): void {
-    this.ctx.app.metadataCache.off("changed", this.onChange as (...data: unknown[]) => unknown);
-    this.ctx.app.vault.off("modify", this.onChange as (...data: unknown[]) => unknown);
-    this.ctx.app.workspace.off("active-leaf-change", this.onLeafChange);
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.blocks.clear();
+    this.registry.clear();
   }
 
   updateState(): void {
-    this.runRefresh();
+    this.registry.runRefresh();
   }
 
   private async render(container: HTMLElement): Promise<void> {
@@ -109,18 +61,14 @@ export class TrashModule {
 
     if (!this.ctx.plugin.settings.enableTrash) {
       container.empty();
-      container.style.display = "none";
+      container.addClass("opa-hidden");
       this.rendering.delete(container);
       return;
     }
-    container.style.display = "";
-
-    const scrollableParent = container.closest(".cm-scroller, .markdown-reading-view, .markdown-preview-view") as HTMLElement | null;
-    const scrollTop = scrollableParent?.scrollTop ?? 0;
+    container.removeClass("opa-hidden");
 
     try {
       let items: string[] = [];
-      const dataPath = this.getDataPath();
       try {
         const data = await readDataFile(this.ctx.plugin);
         items = (data.trash ?? []).filter((l): l is string => typeof l === "string" && l.trim().length > 0);
@@ -141,19 +89,12 @@ export class TrashModule {
       clearBtn.addEventListener("click", async () => {
         if (items.length === 0) {
           new Notice(L.alreadyEmpty);
-          this.runRefresh();
+          this.registry.runRefresh();
           return;
         }
-        const data = await readDataFile(this.ctx.plugin);
-        await writeDataFile(this.ctx.plugin, {
-          gamification: data.gamification,
-          projects: data.projects ?? [],
-          reminders: data.reminders ?? [],
-          inbox: data.inbox ?? [],
-          trash: [],
-        });
+        await writeDataFile(this.ctx.plugin, { trash: [] });
         new Notice(L.cleared);
-        this.runRefresh();
+        this.registry.runRefresh();
       });
 
       if (items.length === 0) {
@@ -170,12 +111,6 @@ export class TrashModule {
         });
       }
 
-      if (scrollableParent?.isConnected) {
-        scrollableParent.scrollTop = scrollTop;
-        setTimeout(() => {
-          if (scrollableParent.isConnected) scrollableParent.scrollTop = scrollTop;
-        }, 0);
-      }
     } catch (e) {
       container.empty();
       container.createEl("p", { text: UI_LABELS.errors.renderShort, cls: "view-error" });
