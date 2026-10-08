@@ -1,0 +1,27 @@
+/* Панель «Структура» (opa-outline): вид как у стандартного Outline плюс записи из ежедневных заметок. */
+
+.opa-outline-header .opa-outline-search {
+    padding: 0 var(--size-4-2, 8px) var(--size-4-2, 8px);
+}
+.opa-outline-header .opa-outline-search input {
+    width: 100%;
+}
+
+/* Дата записи после текста подзаголовка. */
+.opa-outline-suffix {
+    color: var(--text-faint);
+}
+
+/* Короткая подсветка места в заметке после перехода из панели. */
+@keyframes opa-outline-flash {
+    from {
+        background-color: var(--text-highlight-bg);
+    }
+    to {
+        background-color: transparent;
+    }
+}
+.opa-outline-flash {
+    border-radius: var(--radius-s, 4px);
+    animation: opa-outline-flash 1.2s ease-out;
+}

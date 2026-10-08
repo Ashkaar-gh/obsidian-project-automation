@@ -1,13 +1,12 @@
 /* Таблицы Home/Project: загрузка, TOC, таблица, группы, строки задач, селект статуса, скролл и подсветка. */
 
-/* В режиме editing — без серой оконтовки вокруг таблицы (как у opa-task-view). */
+/* В режиме editing - без серой оконтовки вокруг таблицы (как у opa-task-view). */
 .markdown-source-view.mod-cm6 .opa-project-view,
 .markdown-source-view.mod-cm6 .opa-project-view .pv-table {
     outline: none !important;
     box-shadow: none !important;
 }
 
-.pv-loading,
 .pv-empty-message {
     text-align: center;
     color: var(--text-faint);
@@ -90,7 +89,7 @@ table.pv-table {
 .pv-table thead th:nth-child(5) { width: 185px; }
 .pv-table thead th:nth-child(6) { width: 240px; text-align: right; }
 
-/* С дедлайном: 7 колонок, предпоследняя — Дедлайн, последняя — Срок. */
+/* С дедлайном: 7 колонок, предпоследняя - Дедлайн, последняя - Срок. */
 .pv-table.pv-table-with-deadline thead th:nth-child(6) { width: 120px; text-align: right; }
 .pv-table.pv-table-with-deadline thead th:nth-child(7) { width: 240px; text-align: right; }
 
@@ -200,20 +199,6 @@ table.pv-table {
     overflow-wrap: break-word;
 }
 
-.pv-link {
-    color: #78a2e1;
-    text-decoration: none;
-    font-weight: 500;
-    display: block;
-    transition: color 0.2s ease;
-}
-
-.pv-link:hover {
-    color: var(--interactive-accent-hover);
-    text-decoration: none;
-    cursor: pointer;
-}
-
 .pv-task-row td:nth-child(6),
 .pv-task-row td:nth-child(7),
 .pv-task-row td.pv-col-fixed-date,
@@ -236,7 +221,7 @@ table.pv-table {
     text-overflow: ellipsis;
 }
 
-/* Просроченный дедлайн (дата в прошлом и статус не «Готово») — красная дата. */
+/* Просроченный дедлайн (дата в прошлом и статус не «Готово») - красная дата. */
 .pv-task-row td.pv-deadline-overdue {
     color: var(--text-error) !important;
 }
@@ -245,28 +230,7 @@ table.pv-table {
     padding-left: 15px;
 }
 
-/* Селект статуса — в shared-ui.css (.ui-select, .pv-status-select) */
-
-.view-scroll-blocker {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100vw;
-    height: 100vh;
-    z-index: 9999;
-    background: transparent;
-    cursor: wait;
-}
-
-.view-highlight-anim {
-    animation: view-flash 1.5s ease-out forwards;
-    border-radius: 4px;
-}
-
-@keyframes view-flash {
-    0% { background-color: rgba(var(--interactive-accent-rgb), 0.3); }
-    100% { background-color: transparent; }
-}
+/* Селект статуса - в shared-ui.css (.ui-select, .pv-status-select) */
 
 .pv-collapsed .pv-task-row {
     display: none;

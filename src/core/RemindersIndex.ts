@@ -1,10 +1,9 @@
 /**
  * Индекс напоминаний: из data.json и из .md файлов (любая заметка может содержать напоминания).
- * Чтение data.json — через loadData() плагина, чтобы не обходить кэш Obsidian.
+ * Чтение data.json - через loadData() плагина, чтобы не обходить кэш Obsidian.
  */
 
-import type { App, TAbstractFile } from "obsidian";
-import { TFile } from "obsidian";
+import { TFile, type App, type CachedMetadata, type EventRef, type TAbstractFile } from "obsidian";
 import { Paths } from "./Paths";
 import {
   REMINDER_DATE_TAG_REGEX,
@@ -12,6 +11,7 @@ import {
   completedLineToReminderItem,
   type ReminderData,
 } from "./ReminderDataUtils";
+import { REMINDER_REWARD_MARKER_PREFIX } from "./ReminderRewards";
 
 /** Плагин или объект с loadData и путём к data.json (избегаем циклического импорта). */
 export interface IPluginDataStorage {
@@ -27,16 +27,26 @@ interface RawEntry {
 export class RemindersIndex {
   private byFile = new Map<string, RawEntry[]>();
   private completedByFile = new Map<string, RawEntry[]>();
-  private modifyCb: ((file: TAbstractFile) => void) | null = null;
+  private eventRefs: EventRef[] = [];
+  private subscribed = false;
+  /** Отложенная подписка на create/rename не должна сработать после unsubscribe. */
+  private subscriptionGeneration = 0;
   private resolvedCb: (() => void) | null = null;
   private builtOnce = false;
   /** Разрешается после первой полной сборки индекса. */
   private buildPromise: Promise<void> | null = null;
+  private resolvePendingBuild: (() => void) | null = null;
   private prefixTemplates: string;
   private trashPath: string;
   private dataPath: string;
   /** Свои записи: не перечитывать файл из кэша сразу после modify (иначе затирает новые даты). */
   private suppressModifyUntil = new Map<string, number>();
+  private fileRevisions = new Map<string, number>();
+  /**
+   * Файлы с маркерами незавершённых наград за напоминания (см. ReminderRewards). Индекс и так читает
+   * каждый файл, поэтому модулю напоминаний не нужно повторно сканировать хранилище при запуске.
+   */
+  private rewardMarkerFiles = new Set<string>();
 
   constructor(
     private app: App,
@@ -47,8 +57,26 @@ export class RemindersIndex {
     this.dataPath = plugin.getGamificationDataPath();
   }
 
-  private isExcluded(path: string): boolean {
+  /** Файлы, в которых напоминания не ищутся: шаблоны и корзина. */
+  isExcluded(path: string): boolean {
     return path.startsWith(this.prefixTemplates) || path === this.trashPath;
+  }
+
+  private removeFile(path: string): void {
+    this.fileRevisions.set(path, (this.fileRevisions.get(path) ?? 0) + 1);
+    this.byFile.delete(path);
+    this.completedByFile.delete(path);
+    this.rewardMarkerFiles.delete(path);
+    this.suppressModifyUntil.delete(path);
+  }
+
+  /** Пути файлов, в которых остались маркеры незавершённых наград за напоминания. */
+  getFilesWithRewardMarkers(): string[] {
+    return [...this.rewardMarkerFiles];
+  }
+
+  private reportError(action: string, path: string, error: unknown): void {
+    console.error(`[RemindersIndex] ${action} failed for ${path}:`, error);
   }
 
   /** Загрузить напоминания из data.json через кэш плагина. */
@@ -65,18 +93,39 @@ export class RemindersIndex {
   async buildFull(): Promise<void> {
     this.byFile.clear();
     this.completedByFile.clear();
+    this.rewardMarkerFiles.clear();
     const lines = await this.loadRemindersFromData();
     this.updateFileFromContent(this.dataPath, lines);
 
     const files = this.app.vault.getMarkdownFiles().filter((f) => !this.isExcluded(f.path));
     for (const file of files) {
       if (file.path === this.dataPath) continue;
-      const content = await this.app.vault.read(file);
-      this.updateFileFromContent(file.path, content);
+      // Файл, в котором по кэшу метаданных точно нет строк-чекбоксов, читать с диска незачем
+      // (таких заметок в хранилище большинство).
+      if (this.hasNoTaskLinesByCache(this.app.metadataCache.getFileCache(file))) continue;
+      try {
+        // Стартовая сборка: содержимое только читается, актуальность кэша Obsidian здесь достаточна
+        // (после собственных записей индекс обновляется через updateFile с известным содержимым).
+        const content = await this.app.vault.cachedRead(file);
+        this.updateFileFromContent(file.path, content);
+      } catch (error) {
+        this.removeFile(file.path);
+        this.reportError("initial read", file.path, error);
+      }
     }
   }
 
-  /** Принудительно перечитать напоминания из data.json (вызывать после записи в data.json — adapter.write не всегда триггерит "modify"). */
+  /**
+   * По кэшу метаданных точно известно, что строк-чекбоксов в файле нет (ни одной задачи списка).
+   * Чекбоксы внутри цитат и callout в listItems не попадают, но напоминаниями индекс их и так не считает:
+   * строка должна начинаться с «- [ ]». Без кэша - false: файл читается.
+   */
+  private hasNoTaskLinesByCache(cache: CachedMetadata | null): boolean {
+    if (!cache) return false;
+    return !(cache.listItems ?? []).some((item) => item.task != null);
+  }
+
+  /** Принудительно перечитать напоминания из data.json (вызывать после записи в data.json - adapter.write не всегда триггерит "modify"). */
   async refreshDataJson(): Promise<void> {
     const lines = await this.loadRemindersFromData();
     this.updateFileFromContent(this.dataPath, lines);
@@ -84,29 +133,37 @@ export class RemindersIndex {
 
   /**
    * Обновить индекс по одному файлу (data.json или .md).
-   * @param knownContent — уже известное содержимое после своей записи (обход устаревшего cachedRead).
+   * @param knownContent - уже известное содержимое после своей записи (обход устаревшего cachedRead).
    */
   async updateFile(file: TFile, knownContent?: string): Promise<void> {
+    const revision = (this.fileRevisions.get(file.path) ?? 0) + 1;
+    this.fileRevisions.set(file.path, revision);
     if (file.path === this.dataPath) {
       const lines = await this.loadRemindersFromData();
+      if (this.fileRevisions.get(file.path) !== revision) return;
       this.updateFileFromContent(this.dataPath, lines);
       return;
     }
     if (!file.path.endsWith(".md")) return;
     if (this.isExcluded(file.path)) {
-      this.byFile.delete(file.path);
+      this.removeFile(file.path);
       return;
     }
-    // vault.read — актуальные данные; cachedRead сразу после process/modify может отставать.
+    // vault.read - актуальные данные; cachedRead сразу после process/modify может отставать.
     const content = knownContent ?? (await this.app.vault.read(file));
+    if (this.fileRevisions.get(file.path) !== revision) return;
     this.updateFileFromContent(file.path, content);
   }
 
   private updateFileFromContent(filePath: string, content: string[] | string | null): void {
     if (!content) {
-      this.byFile.delete(filePath);
-      this.completedByFile.delete(filePath);
+      this.removeFile(filePath);
       return;
+    }
+    if (typeof content === "string" && content.includes(REMINDER_REWARD_MARKER_PREFIX)) {
+      this.rewardMarkerFiles.add(filePath);
+    } else {
+      this.rewardMarkerFiles.delete(filePath);
     }
     const lines = Array.isArray(content) ? content : content.split("\n");
     const entries: RawEntry[] = [];
@@ -161,7 +218,7 @@ export class RemindersIndex {
         ? item.date.getTime()
         : new Date(item.date.getFullYear(), item.date.getMonth(), item.date.getDate(), 10, 0, 0, 0).getTime();
       if (trigger <= now) {
-        // Уже пора (просроченные / due сейчас) — проверить снова почти сразу
+        // Уже пора (просроченные / due сейчас) - проверить снова почти сразу
         hasDueNow = true;
       } else if (trigger < nextTime) {
         nextTime = trigger;
@@ -174,7 +231,7 @@ export class RemindersIndex {
 
   /**
    * Не перечитывать path из vault по событию modify в течение ms.
-   * Нужно после своей записи с knownContent — иначе cached/гонка возвращает старые даты в индекс.
+   * Нужно после своей записи с knownContent - иначе cached/гонка возвращает старые даты в индекс.
    */
   suppressVaultModify(path: string, ms = 2000): void {
     this.suppressModifyUntil.set(path, Date.now() + ms);
@@ -190,47 +247,87 @@ export class RemindersIndex {
     return true;
   }
 
-  /** Подписаться на изменения data.json и .md файлов. Первая сборка — после загрузки хранилища (resolved). */
+  /** Подписаться на изменения data.json и .md файлов. Первая сборка - после загрузки хранилища (resolved). */
   ensureSubscribed(onUpdated?: () => void): void {
-    if (!this.modifyCb) {
-      this.modifyCb = (file: TAbstractFile) => {
-        if (file instanceof TFile) {
-          if (this.isModifySuppressed(file.path)) return;
-          if (file.path === this.dataPath || (file.path.endsWith(".md") && !this.isExcluded(file.path))) {
-            this.updateFile(file).then(() => onUpdated?.());
-          }
-        }
+    if (this.eventRefs.length === 0) {
+      this.subscribed = true;
+      const generation = ++this.subscriptionGeneration;
+      const update = (file: TAbstractFile, action: "create" | "modify"): void => {
+        if (!(file instanceof TFile)) return;
+        if (action === "modify" && this.isModifySuppressed(file.path)) return;
+        if (file.path !== this.dataPath && !file.path.endsWith(".md")) return;
+        void this.updateFile(file)
+          .then(() => onUpdated?.())
+          .catch((error) => this.reportError(action, file.path, error));
       };
-      // Plugin реализует registerEvent — подписка снимается при unload автоматически.
-      const plugin = this.plugin as IPluginDataStorage & { registerEvent?(ref: unknown): unknown };
-      if (typeof plugin.registerEvent === "function") {
-        plugin.registerEvent(this.app.vault.on("modify", this.modifyCb));
-      } else {
-        this.app.vault.on("modify", this.modifyCb);
-      }
+      const remove = (file: TAbstractFile): void => {
+        this.removeFile(file.path);
+        onUpdated?.();
+      };
+      const rename = (file: TAbstractFile, oldPath: string): void => {
+        this.removeFile(oldPath);
+        update(file, "create");
+      };
+      const register = (ref: EventRef): void => {
+        this.eventRefs.push(ref);
+        const plugin = this.plugin as IPluginDataStorage & { registerEvent?(ref: unknown): unknown };
+        if (typeof plugin.registerEvent === "function") plugin.registerEvent(ref);
+      };
+
+      register(this.app.vault.on("modify", (file) => update(file, "modify")));
+      register(this.app.vault.on("delete", remove));
+      register(this.app.vault.on("rename", rename));
+      // create приходит на каждый существующий файл при загрузке хранилища - все они и так попадают
+      // в buildFull, а повторное чтение каждого файла здесь удвоило бы стартовую нагрузку. Файл, созданный
+      // между снимком buildFull и готовностью layout, попадёт в индекс при первом своём modify.
+      const attachCreate = (): void => {
+        if (!this.subscribed || generation !== this.subscriptionGeneration) return;
+        register(this.app.vault.on("create", (file) => update(file, "create")));
+      };
+      if (this.app.workspace.layoutReady) attachCreate();
+      else this.app.workspace.onLayoutReady(attachCreate);
     }
     if (!this.builtOnce) {
       this.builtOnce = true;
+      const runBuild = (): Promise<void> =>
+        this.buildFull()
+          .then(() => onUpdated?.())
+          .catch((error) => this.reportError("initial build", "vault", error));
       // metadataCache.initialized есть в runtime, но не всегда в типах
       const cacheReady = (this.app.metadataCache as { initialized?: boolean }).initialized === true;
       if (cacheReady) {
-        this.buildPromise = this.buildFull().then(() => onUpdated?.());
+        this.buildPromise = runBuild();
+        // Кэш метаданных может ещё доиндексировать файлы, изменённые пока Obsidian был закрыт, а по кэшу
+        // buildFull решает, какие файлы не читать: после первого «resolved» собираем ещё раз (как TaskIndex).
+        this.onResolvedOnce(() => void runBuild());
       } else {
         this.buildPromise = new Promise<void>((resolve) => {
-          this.resolvedCb = () => {
-            if (this.resolvedCb) {
-              this.app.metadataCache.off("resolved", this.resolvedCb);
-              this.resolvedCb = null;
-            }
-            this.buildFull().then(() => {
-              onUpdated?.();
+          this.resolvePendingBuild = resolve;
+          this.onResolvedOnce(() => {
+            void runBuild().finally(() => {
+              this.resolvePendingBuild = null;
               resolve();
             });
-          };
-          this.app.metadataCache.on("resolved", this.resolvedCb);
+          });
         });
       }
     }
+  }
+
+  /** Выполнить fn на ближайшем «resolved» (индексация хранилища завершена); подписка одноразовая. */
+  private onResolvedOnce(fn: () => void): void {
+    this.detachResolved();
+    this.resolvedCb = () => {
+      this.detachResolved();
+      fn();
+    };
+    this.app.metadataCache.on("resolved", this.resolvedCb);
+  }
+
+  private detachResolved(): void {
+    if (!this.resolvedCb) return;
+    this.app.metadataCache.off("resolved", this.resolvedCb);
+    this.resolvedCb = null;
   }
 
   /** Дождаться завершения первой сборки индекса (для рендера). */
@@ -239,11 +336,14 @@ export class RemindersIndex {
   }
 
   unsubscribe(): void {
-    if (this.resolvedCb) {
-      this.app.metadataCache.off("resolved", this.resolvedCb);
-      this.resolvedCb = null;
-    }
-    // modify через registerEvent снимается при unload плагина.
-    this.modifyCb = null;
+    this.detachResolved();
+    this.resolvePendingBuild?.();
+    this.resolvePendingBuild = null;
+    for (const ref of this.eventRefs) this.app.vault.offref(ref);
+    this.eventRefs = [];
+    this.subscribed = false;
+    this.subscriptionGeneration++;
+    this.builtOnce = false;
+    this.buildPromise = null;
   }
 }

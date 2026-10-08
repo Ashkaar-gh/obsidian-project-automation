@@ -9,6 +9,18 @@ const path = require("path");
 const fs = require("fs");
 
 const root = __dirname;
+const stylesOrder = [
+  "shared-ui.css",
+  "home.css",
+  "dataview-tables.css",
+  "gamification.css",
+  "activities.css",
+  "reminders.css",
+  "task-view.css",
+  "three-column-grid-list.css",
+  "wide-page.css",
+  "outline.css",
+];
 
 function rmDir(dir) {
   if (!fs.existsSync(dir)) return;
@@ -41,28 +53,16 @@ esbuild
       }
     }
     const stylesDir = path.join(root, "styles");
-    const stylesOrder = [
-      "shared-ui.css",
-      "home.css",
-      "dataview-tables.css",
-      "gamification.css",
-      "activities.css",
-      "task-view.css",
-      "three-column-grid-list.css",
-      "wide-page.css",
-    ];
-    if (fs.existsSync(stylesDir)) {
-      let out = "";
-      for (const name of stylesOrder) {
-        const f = path.join(stylesDir, name);
-        if (fs.existsSync(f)) out += fs.readFileSync(f, "utf8") + "\n";
-      }
-      if (out) {
-        fs.writeFileSync(path.join(root, "styles.css"), out);
-        console.log("  Собран styles.css");
-      }
+    const missingStyles = stylesOrder.filter((name) => !fs.existsSync(path.join(stylesDir, name)));
+    if (missingStyles.length > 0) {
+      throw new Error(`Missing required style sources: ${missingStyles.join(", ")}`);
     }
-    console.log("Сборка завершена. В плагин копируйте main.js, manifest.json и styles.css.");
+    const styles = stylesOrder
+      .map((name) => fs.readFileSync(path.join(stylesDir, name), "utf8"))
+      .join("\n") + "\n";
+    fs.writeFileSync(path.join(root, "styles.css"), styles);
+    console.log("  Собран styles.css");
+    console.log("Сборка завершена. Артефакты плагина: main.js, manifest.json, styles.css, defaults.json.");
   })
   .catch((err) => {
     console.error(err);

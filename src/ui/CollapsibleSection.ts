@@ -63,10 +63,7 @@ export function createCollapsibleSection(
     indicator.appendChild(svg);
   }
 
-  const titleEl = header.createEl("h4", {
-    cls: "opa-section-title",
-    text: title,
-  });
+  header.createEl("h4", { cls: "opa-section-title", text: title });
 
   const body = wrap.createEl("div", { cls: "opa-section-body" });
 

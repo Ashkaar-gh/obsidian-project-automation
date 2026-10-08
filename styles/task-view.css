@@ -92,13 +92,30 @@
     cursor: pointer !important;
 }
 
-/* Отступы: справа — текст не прижат; слева — окантовка при выделении картинки видна. */
+/*
+ * Отступы: справа - текст не прижат; слева - окантовка при выделении картинки видна.
+ * Запись всегда показывается целиком, поэтому прокрутки у неё быть не должно. У .task-view-display класс
+ * markdown-preview-view, которому Obsidian задаёт overflow-y: auto и height: 100%, а обёртке
+ * .markdown-embed-content - max-height (--embed-max-height): у длинных записей от этого появлялась полоса
+ * прокрутки. overflow-x: clip режет слишком широкий контент, но, в отличие от hidden, не делает элемент
+ * прокручиваемым.
+ */
 .task-view-display {
     max-width: 100%;
-    overflow-x: hidden;
+    max-height: none !important;
+    height: auto !important;
+    overflow-x: clip !important;
+    overflow-y: visible !important;
     padding-left: 14px;
     padding-right: 14px;
     box-sizing: border-box;
+}
+
+.task-view-entry,
+.task-view-entry .markdown-embed-content {
+    max-height: none !important;
+    height: auto !important;
+    overflow: visible !important;
 }
 
 .task-view-entry .markdown-embed-content {
@@ -126,7 +143,7 @@
     padding: 0;
 }
 
-/* Учитываем перенос строки после блока кода (атрибуты дублируются на div-обёртку — Prism сбрасывает их на pre) */
+/* Учитываем перенос строки после блока кода (атрибуты дублируются на div-обёртку - Prism сбрасывает их на pre) */
 [data-task-view-content="1"] .task-view-display pre[data-after-blank="0"],
 [data-task-view-content="1"] .task-view-display .markdown-preview-section pre[data-after-blank="0"],
 [data-task-view-content="1"] .task-view-display > div:has(> pre[data-after-blank="0"]),
@@ -137,7 +154,7 @@
     margin-block-end: 0 !important;
 }
 
-/* Элемент сразу после блока кода без пустой строки — убираем его margin-top (иначе p/div получают лишний 1rem) */
+/* Элемент сразу после блока кода без пустой строки - убираем его margin-top (иначе p/div получают лишний 1rem) */
 [data-task-view-content="1"] .task-view-display pre[data-after-blank="0"] + *,
 [data-task-view-content="1"] .task-view-display .markdown-preview-section pre[data-after-blank="0"] + *,
 [data-task-view-content="1"] .task-view-display > div:has(> pre[data-after-blank="0"]) + *,
@@ -157,7 +174,7 @@
     margin-bottom: 1em !important;
 }
 
-/* Слитный текст + код в ежедневнике: без лишнего зазора; с пустой строкой — селекторы ниже не срабатывают */
+/* Слитный текст + код в ежедневнике: без лишнего зазора; с пустой строкой - селекторы ниже не срабатывают */
 [data-task-view-content="1"] .task-view-display p:has(+ pre[data-before-blank="0"]),
 [data-task-view-content="1"] .task-view-display .markdown-preview-section p:has(+ pre[data-before-blank="0"]),
 [data-task-view-content="1"] .task-view-display p:has(+ div[data-before-blank="0"]),
@@ -182,18 +199,7 @@
     margin-top: 0 !important;
 }
 
-.markdown-source-view.mod-cm6 .cm-embed-block:has(.block-language-dataviewjs) {
-    box-shadow: none !important;
-    border: none !important;
-    background-color: transparent !important;
-    cursor: default !important;
-}
-
-.markdown-source-view.mod-cm6 .cm-embed-block:has(.block-language-dataviewjs) .edit-block-button {
-    display: none !important;
-}
-
-/* Блок opa-task-view: как dataviewjs в scripts_old — без рамки контейнера и без кнопки "Edit this block". */
+/* Блок opa-task-view в режиме редактирования: без рамки контейнера и без кнопки "Edit this block". */
 .markdown-source-view.mod-cm6 .cm-embed-block:has(.block-language-opa-task-view),
 .markdown-source-view.mod-cm6 .cm-embed-block:has(.opa-task-view) {
     box-shadow: none !important;
@@ -228,16 +234,6 @@
     border: none !important;
     outline: none !important;
     background-color: transparent !important;
-}
-
-.block-language-dataviewjs textarea,
-.block-language-dataviewjs input {
-    cursor: text !important;
-}
-
-.block-language-dataviewjs a,
-.block-language-dataviewjs button {
-    cursor: pointer !important;
 }
 
 .task-view-entry,
@@ -298,15 +294,6 @@
     margin-block-end: 0.75em !important;
 }
 
-.target-highlight {
-    animation: highlight-fade 2s ease-out;
-}
-
-@keyframes highlight-fade {
-    0% { background-color: var(--background-modifier-active-hover); }
-    100% { background-color: transparent; }
-}
-
 .task-view-display img,
 .task-view-display video,
 .task-view-display .internal-embed {
@@ -334,4 +321,10 @@
 
 .task-view-display .internal-embed:has(img).task-view-resize-zone {
     cursor: ew-resize;
+}
+
+/* Поиск Ctrl+F в режиме редактирования: найденное в записях блока (CSS Custom Highlight API, DOM не меняется). */
+::highlight(opa-task-search) {
+    background-color: var(--text-accent);
+    color: var(--text-on-accent);
 }

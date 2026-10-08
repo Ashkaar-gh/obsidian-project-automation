@@ -3,8 +3,10 @@
  * Список дел с отметкой «когда делалось в последний раз», модалка со статистикой (сетка месяца).
  */
 
-import type { ModuleContext } from "./types";
+import { Modal, Notice, type App } from "obsidian";
+import type { ModuleContext, PluginModule } from "./types";
 import {
+  emptyGamificationState,
   readDataFile,
   updateDataFile,
   getRewardForDifficulty,
@@ -14,49 +16,17 @@ import {
   type ActivitiesData,
   type ActivityItem,
 } from "../core/GamificationState";
+import { MONTH_NAMES_RU, formatDateKey, getDaysInMonth, parseCalendarDate } from "../core/DateUtils";
 import { UI_LABELS } from "../ui/Labels";
 import { createCollapsibleSection } from "../ui/CollapsibleSection";
 import { BlockRegistry } from "../ui/BlockRegistry";
-import { Modal, Notice } from "obsidian";
+import { isRenderUnchanged, markRendered, renderSignature } from "../ui/RenderCache";
+import { DatePickerModal } from "../ui/DatePickerModal";
 
 const STORAGE_KEY_ACTIVITIES = "opa-activities-view";
 
-const MONTH_NAMES: string[] = [
-  "январь", "февраль", "март", "апрель", "май", "июнь",
-  "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
-];
-
 function getTodayKey(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function getLastDoneDate(dates: string[]): string | null {
-  if (!dates || dates.length === 0) return null;
-  const sorted = [...dates].sort();
-  return sorted[sorted.length - 1];
-}
-
-/** Парсинг YYYY-MM-DD по компонентам (new Date(str) дал бы полночь UTC и сдвиг дня в западных таймзонах). */
-function parseDateKey(dateKey: string): { year: number; month: number; day: number } {
-  const [year, month, day] = dateKey.split("-").map(Number);
-  return { year, month, day };
-}
-
-function getDisplayTextForLastDone(lastDate: string | null, todayKey: string): string {
-  const L = UI_LABELS.activities;
-  if (!lastDate) return L.never;
-  if (lastDate === todayKey) return L.doneToday;
-
-  const today = parseDateKey(todayKey);
-  const last = parseDateKey(lastDate);
-  const todayStart = Date.UTC(today.year, today.month - 1, today.day);
-  const lastStart = Date.UTC(last.year, last.month - 1, last.day);
-  const diffDays = Math.floor((todayStart - lastStart) / (24 * 60 * 60 * 1000));
-
-  if (diffDays === 1) return L.yesterday;
-  if (diffDays >= 7) return L.weekAgo;
-  return L.daysAgo(diffDays);
+  return formatDateKey(new Date());
 }
 
 function nextActivityId(items: ActivityItem[]): string {
@@ -95,7 +65,7 @@ function getItemsSortedByFrequency(data: ActivitiesData): ActivityItem[] {
   return [...data.items].sort((a, b) => (totals.get(b.id) ?? 0) - (totals.get(a.id) ?? 0));
 }
 
-/** Модалка «Выбор активностей»: сначала отмеченные за dateKey, внутри групп — по частоте. */
+/** Модалка «Выбор активностей»: сначала отмеченные за dateKey, внутри групп - по частоте. */
 function getItemsSortedForActivityPicker(data: ActivitiesData, dateKey: string): ActivityItem[] {
   const totals = getTotalCounts(data);
   return [...data.items].sort((a, b) => {
@@ -109,11 +79,11 @@ function getItemsSortedForActivityPicker(data: ActivitiesData, dateKey: string):
 /** Интервал проверки смены дня (мс). При наступлении 00:00 вид перерисуется без перезапуска. */
 const DAY_CHECK_INTERVAL_MS = 60 * 1000;
 
-export class ActivitiesModule {
+export class ActivitiesModule implements PluginModule {
   private ctx: ModuleContext;
   private registry: BlockRegistry;
   private lastTodayKey: string = getTodayKey();
-  /** Выбранная дата для отображения и редактирования активностей (по умолчанию — сегодня). */
+  /** Выбранная дата для отображения и редактирования активностей (по умолчанию - сегодня). */
   private selectedDateKey: string = getTodayKey();
 
   constructor(ctx: ModuleContext) {
@@ -122,19 +92,20 @@ export class ActivitiesModule {
       app: ctx.app,
       isEnabled: () => ctx.plugin.settings.enableActivities,
       domSelector: ".opa-activities-view",
-      createRefresh: (el) => () => this.render(el),
+      createRefresh: (el) => (force) => this.render(el, force),
     });
   }
 
   load(): void {
     const { plugin, app } = this.ctx;
     plugin.registerEvent(app.vault.on("modify", this.onDataChange));
+    plugin.registerEvent(app.workspace.on("active-leaf-change", this.registry.scheduleRefresh));
     this.lastTodayKey = getTodayKey();
     plugin.registerInterval(window.setInterval(() => this.checkDayChange(), DAY_CHECK_INTERVAL_MS));
 
-    plugin.registerMarkdownCodeBlockProcessor("opa-activities-view", (_source, el) => {
+    plugin.registerMarkdownCodeBlockProcessor("opa-activities-view", (_source, el, ctx) => {
       el.addClass("opa-activities-view");
-      this.registry.register(el, () => this.render(el));
+      this.registry.register(el, (force) => this.render(el, force), ctx);
     });
   }
 
@@ -224,6 +195,10 @@ export class ActivitiesModule {
           defaultDifficulty: activityDefault,
         });
         rewardToGive = { xp: reward.xp * toGive, gold: reward.gold * toGive };
+        const state = d.gamification ?? emptyGamificationState();
+        state.xp += rewardToGive.xp;
+        state.gold += rewardToGive.gold;
+        d.gamification = state;
       }
       if (count > 0) {
         byDateRewards[dateKey] = Math.max(alreadyGiven, count);
@@ -234,11 +209,8 @@ export class ActivitiesModule {
     });
     if (rewardToGive) {
       const { xp, gold } = rewardToGive;
-      const state = await this.ctx.plugin.getGamificationState();
-      state.xp += xp;
-      state.gold += gold;
-      this.ctx.plugin.scheduleGamificationSave();
       new Notice(UI_LABELS.gamification.rewardLine(xp, gold));
+      await this.ctx.plugin.refreshGamificationState();
       this.ctx.plugin.gamification?.updateState?.();
     }
     this.runRefresh();
@@ -248,7 +220,7 @@ export class ActivitiesModule {
     await this.setCount(activityId, dateKey, isAdding ? 1 : 0);
   }
 
-  private async render(container: HTMLElement): Promise<void> {
+  private async render(container: HTMLElement, force = true): Promise<void> {
     if (!this.ctx.plugin.settings.enableActivities) {
       container.empty();
       container.addClass("opa-hidden");
@@ -261,9 +233,12 @@ export class ActivitiesModule {
 
     try {
       const data = await this.getActivitiesData();
+      const signature = renderSignature("activities", this.selectedDateKey, todayKey, data);
+      if (!force && isRenderUnchanged(container, signature)) return;
       container.empty();
+      markRendered(container, signature);
 
-      const body = createCollapsibleSection(container, L.title, STORAGE_KEY_ACTIVITIES);
+      const body = createCollapsibleSection(container, UI_LABELS.blockTitles.activities, STORAGE_KEY_ACTIVITIES);
 
       const dateItems = getItemsSortedByFrequency(data)
         .map((item) => ({ item, count: this.getCount(data, item.id, this.selectedDateKey) }))
@@ -321,15 +296,17 @@ export class ActivitiesModule {
       btnAll.addEventListener("click", () => this.openAllActivitiesModal());
       btnCharts.addEventListener("click", () => this.openStatisticsModal());
       btnDate.addEventListener("click", () => {
-        new ActivitiesDatePickerModal(
-          this.ctx.app,
-          this.selectedDateKey,
-          todayKey,
-          (dateKey) => {
-            this.selectedDateKey = dateKey;
+        // Активности отмечают за прошедшие дни, не вперёд: дата не позже сегодняшней
+        new DatePickerModal(this.ctx.app, {
+          title: L.dateButton,
+          initial: parseCalendarDate(this.selectedDateKey),
+          max: new Date(),
+          onDone: (date) => {
+            if (!date) return;
+            this.selectedDateKey = formatDateKey(date);
             this.runRefresh();
           },
-        ).open();
+        }).open();
       });
     } catch (e) {
       container.empty();
@@ -424,229 +401,21 @@ export class ActivitiesModule {
   }
 }
 
-function getDaysInMonth(year: number, month: number): number {
-  return new Date(year, month, 0).getDate();
-}
-
 function dateKeyFromParts(year: number, month: number, day: number): string {
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-}
-
-function clampToMax(dateKey: string, maxKey: string): string {
-  if (dateKey <= maxKey) return dateKey;
-  return maxKey;
-}
-
-/** Окно выбора даты в стиле «Дата ежедневной заметки»: день, месяц, год и кнопки Текущий день / Отмена / OK. */
-class ActivitiesDatePickerModal extends Modal {
-  private day: number;
-  private month: number;
-  private year: number;
-  private readonly maxKey: string;
-  private readonly onSelect: (dateKey: string) => void;
-  private dayEl!: HTMLElement;
-  private monthEl!: HTMLElement;
-  private yearEl!: HTMLElement;
-  private readonly yearMin = 2020;
-
-  constructor(
-    app: import("obsidian").App,
-    initialDateKey: string,
-    maxDateKey: string,
-    onSelect: (dateKey: string) => void,
-  ) {
-    super(app);
-    this.maxKey = maxDateKey;
-    this.onSelect = onSelect;
-    const [y, m, d] = initialDateKey.split("-").map(Number);
-    this.year = y;
-    this.month = m;
-    this.day = d;
-  }
-
-  onOpen(): void {
-    const L = UI_LABELS.activities;
-    this.clampDay();
-    this.titleEl.setText(L.dateButton);
-    this.modalEl.addClass("opa-daily-heading-date-modal");
-
-    const steppersWrap = this.contentEl.createDiv({ cls: "opa-daily-heading-date-steppers-wrap" });
-    const monthWrap = steppersWrap.createDiv({ cls: "gamification-completed-month-wrap opa-daily-heading-date-steppers" });
-
-    const dayGroup = monthWrap.createDiv({ cls: "gamification-month-group" });
-    const dayStepper = dayGroup.createDiv({ cls: "gamification-stepper-group" });
-    dayStepper.tabIndex = 0;
-    dayStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "‹" })
-      .addEventListener("click", () => this.changeDay(-1));
-    this.dayEl = dayStepper.createEl("span", { cls: "gamification-stepper-value" });
-    dayStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "›" })
-      .addEventListener("click", () => this.changeDay(1));
-
-    const monthGroup = monthWrap.createDiv({ cls: "gamification-month-group" });
-    const monthStepper = monthGroup.createDiv({ cls: "gamification-stepper-group" });
-    monthStepper.tabIndex = 0;
-    monthStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "‹" })
-      .addEventListener("click", () => this.changeMonth(-1));
-    this.monthEl = monthStepper.createEl("span", { cls: "gamification-stepper-value gamification-stepper-month" });
-    monthStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "›" })
-      .addEventListener("click", () => this.changeMonth(1));
-
-    const yearGroup = monthWrap.createDiv({ cls: "gamification-month-group" });
-    const yearStepper = yearGroup.createDiv({ cls: "gamification-stepper-group" });
-    yearStepper.tabIndex = 0;
-    yearStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "‹" })
-      .addEventListener("click", () => this.changeYear(-1));
-    this.yearEl = yearStepper.createEl("span", { cls: "gamification-stepper-value" });
-    yearStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "›" })
-      .addEventListener("click", () => this.changeYear(1));
-
-    this.refreshLabels();
-
-    const currentDayRow = steppersWrap.createDiv({ cls: "opa-daily-heading-current-day-row" });
-    const currentDayBtn = currentDayRow.createEl("button", {
-      type: "button",
-      cls: "gamification-stepper-current-btn",
-      text: "Текущий день",
-    });
-    currentDayBtn.addEventListener("click", () => {
-      const [y, m, d] = this.maxKey.split("-").map(Number);
-      this.year = y;
-      this.month = m;
-      this.day = d;
-      this.refreshLabels();
-    });
-
-    const btnRow = this.contentEl.createDiv({ cls: "opa-daily-heading-date-buttons" });
-    const cancelBtn = btnRow.createEl("button", { text: UI_LABELS.common.cancel, cls: "mod-secondary" });
-    const okBtn = btnRow.createEl("button", { text: UI_LABELS.common.ok, cls: "mod-cta" });
-    cancelBtn.addEventListener("click", () => this.close());
-    okBtn.addEventListener("click", () => {
-      const key = dateKeyFromParts(this.year, this.month, this.day);
-      this.onSelect(clampToMax(key, this.maxKey));
-      this.close();
-    });
-
-    this.contentEl.addEventListener("keydown", this.handleKeydown);
-    setTimeout(() => dayStepper.focus(), 0);
-  }
-
-  onClose(): void {
-    this.contentEl.removeEventListener("keydown", this.handleKeydown);
-  }
-
-  private handleKeydown = (e: KeyboardEvent): void => {
-    const steppers = Array.from(
-      this.contentEl.querySelectorAll<HTMLElement>(".opa-daily-heading-date-steppers .gamification-stepper-group")
-    );
-    if (steppers.length !== 3) return;
-
-    if (e.key === "Enter" && steppers.includes(document.activeElement as typeof steppers[number])) {
-      e.preventDefault();
-      const key = dateKeyFromParts(this.year, this.month, this.day);
-      this.onSelect(clampToMax(key, this.maxKey));
-      this.close();
-      return;
-    }
-
-    if (e.key === "Tab") {
-      const idx = steppers.indexOf(document.activeElement as typeof steppers[number]);
-      if (idx >= 0) {
-        e.preventDefault();
-        const next = e.shiftKey ? (idx - 1 + 3) % 3 : (idx + 1) % 3;
-        steppers[next].focus();
-      }
-      return;
-    }
-
-    const focusedIdx = steppers.indexOf(document.activeElement as typeof steppers[number]);
-    if (focusedIdx < 0) return;
-
-    const delta = e.key === "ArrowLeft" || e.key === "ArrowDown" ? -1 : e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : 0;
-    if (delta === 0) return;
-    e.preventDefault();
-    if (focusedIdx === 0) this.changeDay(delta);
-    else if (focusedIdx === 1) this.changeMonth(delta);
-    else this.changeYear(delta);
-  };
-
-  private refreshLabels(): void {
-    this.dayEl.setText(String(this.day));
-    this.monthEl.setText(MONTH_NAMES[this.month - 1] ?? "");
-    this.yearEl.setText(String(this.year));
-  }
-
-  private clampDay(): void {
-    const daysInMonth = getDaysInMonth(this.year, this.month);
-    if (this.day > daysInMonth) this.day = daysInMonth;
-    if (this.day < 1) this.day = 1;
-    const key = dateKeyFromParts(this.year, this.month, this.day);
-    const clamped = clampToMax(key, this.maxKey);
-    const [y, m, d] = clamped.split("-").map(Number);
-    this.year = y;
-    this.month = m;
-    this.day = d;
-  }
-
-  private changeDay(delta: number): void {
-    this.day += delta;
-    if (this.day < 1) {
-      this.month--;
-      if (this.month < 1) {
-        this.month = 12;
-        this.year--;
-      }
-      this.day = getDaysInMonth(this.year, this.month);
-    } else {
-      const daysInMonth = getDaysInMonth(this.year, this.month);
-      if (this.day > daysInMonth) {
-        this.day = 1;
-        this.month++;
-        if (this.month > 12) {
-          this.month = 1;
-          this.year++;
-        }
-      }
-    }
-    this.clampDay();
-    this.refreshLabels();
-  }
-
-  private changeMonth(delta: number): void {
-    this.month += delta;
-    if (this.month > 12) {
-      this.month = 1;
-      this.year++;
-    } else if (this.month < 1) {
-      this.month = 12;
-      this.year--;
-    }
-    const maxDay = getDaysInMonth(this.year, this.month);
-    if (this.day > maxDay) this.day = maxDay;
-    this.clampDay();
-    this.refreshLabels();
-  }
-
-  private changeYear(delta: number): void {
-    const [maxY] = this.maxKey.split("-").map(Number);
-    this.year += delta;
-    if (this.year > maxY) this.year = maxY;
-    if (this.year < this.yearMin) this.year = this.yearMin;
-    this.clampDay();
-    this.refreshLabels();
-  }
 }
 
 /** Модалка «Выбор активностей»: список активностей с отметкой за дату (дата задаётся в блоке «Активности»). */
 class AllActivitiesModal extends Modal {
   private listWrap!: HTMLElement;
-  /** Родитель списка с overflow-y: auto — сохраняем scrollTop при полной перерисовке строк. */
+  /** Родитель списка с overflow-y: auto - сохраняем scrollTop при полной перерисовке строк. */
   private listScrollEl!: HTMLElement;
   private addInput!: HTMLInputElement;
   private searchInput!: HTMLInputElement;
   private searchFilter = "";
 
   constructor(
-    app: import("obsidian").App,
+    app: App,
     private data: ActivitiesData,
     /** Дата, за которую отмечаем активности (YYYY-MM-DD). Передаётся из блока. */
     private dateKey: string,
@@ -863,7 +632,7 @@ class ActivitiesStatisticsModal extends Modal {
   private yearValueEl!: HTMLElement;
 
   constructor(
-    app: import("obsidian").App,
+    app: App,
     private data: ActivitiesData,
     private selectedActivityId?: string
   ) {
@@ -888,7 +657,7 @@ class ActivitiesStatisticsModal extends Modal {
     const yearMax = now.getFullYear() + 5;
 
     const updateStepperLabels = (): void => {
-      this.monthValueEl.setText(MONTH_NAMES[parseInt(this.selectedMonth, 10) - 1] ?? "");
+      this.monthValueEl.setText(MONTH_NAMES_RU[parseInt(this.selectedMonth, 10) - 1] ?? "");
       this.yearValueEl.setText(String(this.selectedYear));
     };
 
@@ -1142,7 +911,7 @@ class ActivitiesStatisticsModal extends Modal {
     svg.appendChild(yMax);
     svg.appendChild(y0);
 
-    // Подписи дней по ширине: короткий текст (только число) — можно плотнее, чем DD.MM
+    // Подписи дней по ширине: короткий текст (только число) - можно плотнее, чем DD.MM
     const minPxPerXLabel = 14;
     const maxLabels = Math.min(
       points.length,

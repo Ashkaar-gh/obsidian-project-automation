@@ -4,7 +4,6 @@
 .ui-btn-primary,
 .ui-btn-secondary,
 .gamification-shop-btn,
-.gamification-shop-manage-btn,
 .view-btn,
 .trash-clear-button,
 .inbox-action-btn,
@@ -44,7 +43,6 @@
 
 /* ---- Кнопка вторичное действие ---- */
 .ui-btn-secondary,
-.gamification-shop-manage-btn,
 .view-btn,
 .trash-clear-button {
     height: 32px !important;
@@ -60,7 +58,6 @@
     font-weight: 500;
 }
 .ui-btn-secondary:hover,
-.gamification-shop-manage-btn:hover,
 .view-btn:hover,
 .trash-clear-button:hover {
     background-color: var(--interactive-hover);
@@ -103,6 +100,12 @@
 .ui-input:focus,
 .view-input:focus {
     border-color: var(--interactive-accent);
+}
+/* Телефон: поле ввода не шире строки формы */
+.is-mobile .ui-input,
+.is-mobile .view-input {
+    width: 100%;
+    max-width: 100%;
 }
 
 /* ---- Поле даты/времени ---- */
@@ -206,63 +209,6 @@
     color: var(--text-normal);
 }
 
-/* Модалка «Новая заметка»: компактно, без лишнего места по центру */
-.opa-new-note-modal {
-    width: 380px !important;
-    max-width: 95vw;
-    box-sizing: border-box;
-}
-.opa-new-note-modal .modal-content {
-    width: 100%;
-    padding: 12px 0;
-    min-height: 0;
-    box-sizing: border-box;
-}
-.opa-new-note-modal .setting-item {
-    padding: 6px 0;
-}
-.opa-new-note-modal .opa-new-note-label {
-    margin: 0 0 10px 0;
-    font-weight: 600;
-    color: var(--text-normal);
-}
-.opa-new-note-modal .opa-new-note-label-secondary {
-    margin: 16px 0 8px 0;
-    font-weight: 500;
-    font-size: 0.95em;
-    color: var(--text-muted);
-}
-.opa-new-note-modal .opa-new-note-buttons {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-.opa-new-note-modal .opa-new-note-buttons button {
-    justify-content: center;
-}
-
-/* Модалка «Создать задачу или проект»: без заголовка и крестика, размер под кнопки */
-.opa-task-or-project-modal .modal-close-button {
-    display: none;
-}
-.opa-task-or-project-modal .modal-title {
-    display: none;
-}
-.opa-task-or-project-modal {
-    width: fit-content !important;
-    min-width: 120px;
-}
-.opa-task-or-project-modal .modal-content {
-    padding: 10px 14px;
-}
-.opa-task-or-project-modal .opa-new-note-buttons {
-    align-items: flex-start;
-}
-.opa-task-or-project-modal .opa-new-note-buttons button {
-    width: auto;
-    min-width: 100px;
-}
-
 /* Модалка «Создать задачу»: фиксированная ширина, прокрутка, поле шаблона не обрезается */
 .opa-create-task-modal {
     width: 620px !important;
@@ -293,7 +239,7 @@
     max-width: 100% !important;
     box-sizing: border-box;
 }
-/* Строка поля: метка слева, контрол справа — одна высота */
+/* Строка поля: метка слева, контрол справа - одна высота */
 .opa-create-task-modal .setting-item {
     align-items: center;
     width: 100% !important;
@@ -306,6 +252,13 @@
     flex: 0 0 auto;
     min-width: 160px;
     max-width: 200px;
+}
+/* Телефон: метка и контрол не помещаются в одну строку - контрол переносится под метку */
+.is-mobile .opa-create-task-modal .setting-item {
+    flex-wrap: wrap;
+}
+.is-mobile .opa-create-task-modal .setting-item-info {
+    min-width: 0;
 }
 /* Правая колонка: занимает оставшееся место, одна ширина у всех полей */
 .opa-create-task-modal .setting-item-control {
@@ -335,18 +288,45 @@
     align-self: stretch;
     min-height: 2.5em;
 }
-/* Строка кнопок Отмена и Создать — нормальный размер, снизу запас под окантовку */
+/*
+ * Подвал формы (ошибка + кнопки Отмена/Создать) прижат к нижнему краю прокручиваемой области и не уезжает
+ * вместе с полями. Отрицательный нижний отступ компенсирует padding-bottom у .modal-content, чтобы прижатый
+ * и «доехавший» подвал стояли на одной высоте.
+ */
+.opa-create-task-modal .opa-create-task-footer {
+    position: sticky;
+    bottom: 0;
+    margin-top: 12px;
+    margin-bottom: -14px;
+    padding: 8px 0 14px;
+    background: var(--modal-background);
+    border-top: 1px solid var(--background-modifier-border);
+}
+/* Строка кнопок Отмена и Создать - нормальный размер; вне подвала (окно комментария к статусу) с отступом сверху */
 .opa-create-task-modal .opa-create-task-buttons {
     display: flex;
     gap: 10px;
     justify-content: flex-end;
     margin-top: 12px;
-    margin-bottom: 4px;
-    padding-top: 8px;
+}
+.opa-create-task-modal .opa-create-task-footer .opa-create-task-buttons {
+    margin-top: 0;
+}
+/* Ошибка стоит над кнопками; скрытая (display: none) отступа не даёт */
+.opa-create-task-modal .opa-create-task-footer .opa-create-task-error {
+    margin-bottom: 10px;
 }
 .opa-create-task-modal .opa-create-task-buttons button {
     width: auto;
     min-width: 80px;
+}
+.opa-create-task-modal .opa-create-task-error {
+    padding: 8px 10px;
+    border: 1px solid var(--background-modifier-error);
+    border-radius: var(--radius-s);
+    background-color: rgba(var(--color-red-rgb), 0.12);
+    color: var(--text-error);
+    font-size: var(--font-ui-small);
 }
 /* Поле комментария при смене статуса: фиксированный размер, без ресайза */
 .opa-create-task-modal .opa-status-comment-input {
@@ -354,30 +334,6 @@
     min-height: 140px;
     width: 100%;
     box-sizing: border-box;
-}
-/* Разделитель и блок дополнительных полей — суммарный отступ = как между строками (12px от низа Группа до верха Комментарий) */
-.opa-create-task-modal .opa-create-task-custom-section {
-    margin-top: 0;
-    padding-top: 0;
-}
-/* У шаблона «Обычная» нет доп. полей — скрываем черту и блок */
-.opa-create-task-modal .opa-create-task-custom-section-empty {
-    display: none !important;
-}
-.opa-create-task-modal .opa-create-task-custom-divider {
-    border: none;
-    border-top: 1px solid var(--background-modifier-border);
-    margin: 0;
-}
-.opa-create-task-modal .opa-create-task-custom-fields .setting-item {
-    margin-top: 0;
-}
-/* Многострочное поле в кастомном блоке: метка по верху */
-.opa-create-task-modal .opa-create-task-custom-fields .setting-item:has(textarea) {
-    align-items: flex-start;
-}
-.opa-create-task-modal .opa-create-task-custom-fields .setting-item:has(textarea) .setting-item-control {
-    align-items: stretch;
 }
 /* Скрыть крестик закрытия модалки */
 .opa-create-task-modal .modal-close-button {
@@ -597,7 +553,7 @@
 }
 
 /* Редактирование строки блокнота */
-.view-list-row.is-editing .inbox-text {
+.view-list-row.is-editing .inbox-entry {
   display: none;
 }
 .view-list-row.is-editing .inbox-actions {
@@ -605,6 +561,7 @@
 }
 .inbox-edit-input {
   width: 100%;
+  max-width: none;
 }
 
 /* Кликабельные заголовки сворачиваемых секций */
@@ -621,3 +578,23 @@
   padding-left: 0.8em;
 }
 
+/* Проект в свойствах заметки - ссылка на заметку проекта (TaskProjectLinkModule). Ссылка - текст плашки,
+   крестик убирает значение, как обычно. */
+.multi-select-pill.opa-project-link {
+  --pill-color: var(--link-color);
+  --pill-color-hover: var(--link-color-hover);
+}
+.multi-select-pill.opa-project-link .multi-select-pill-content {
+  color: var(--link-color);
+  cursor: pointer;
+}
+.multi-select-pill.opa-project-link .multi-select-pill-content:hover {
+  color: var(--link-color-hover);
+  text-decoration: var(--link-decoration-hover);
+}
+/* Выбор проекта в команде «Открыть проект задачи»: путь заметки под именем */
+.opa-project-choice-path {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}

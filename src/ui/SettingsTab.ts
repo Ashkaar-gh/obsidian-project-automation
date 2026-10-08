@@ -1,6 +1,6 @@
 /** Вкладка настроек плагина. */
 
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { Notice, PluginSettingTab, Setting, type App } from "obsidian";
 import type { ObsidianProjectAutomationPlugin } from "../main";
 import {
   ACTIVITY_DIFFICULTY_REWARDS_DEFAULT,
@@ -15,11 +15,14 @@ const DIFFICULTY_KEYS: DifficultyKey[] = ["легкая", "средняя", "с�
 const XP_GOLD_HINT = " Первое поле - XP, второе - Gold.";
 
 export class ObsidianProjectAutomationSettingTab extends PluginSettingTab {
+  private renderGeneration = 0;
+
   constructor(app: App, private plugin: ObsidianProjectAutomationPlugin) {
     super(app, plugin);
   }
 
   display(): void {
+    const generation = ++this.renderGeneration;
     const { containerEl } = this;
     containerEl.empty();
 
@@ -28,8 +31,29 @@ export class ObsidianProjectAutomationSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Проекты и задачи");
     const projectsWrap = containerEl.createDiv({ cls: "opa-settings-projects-wrap opa-settings-indent" });
 
-    // Перечитываем data.json при открытии вкладки, чтобы в форме отображались актуальные contextOptions/environmentOptions
-    this.plugin.loadSettings().then(() => this.renderSettingsForm(containerEl, projectsWrap));
+    // Перечитываем data.json при открытии вкладки, чтобы в форме отображались актуальные contextOptions/environmentOptions.
+    void this.plugin.loadSettings().then(
+      () => {
+        if (generation !== this.renderGeneration || !containerEl.isConnected) return;
+        if (this.plugin.dataFileRecoveryRequired) {
+          projectsWrap.createEl("div", {
+            cls: "setting-item-description",
+            text: "data.json поврежден. Плагин работает в безопасном режиме без сохранения. Исправьте JSON и заново откройте эту вкладку; поврежденный файл не будет перезаписан автоматически.",
+          });
+          return;
+        }
+        this.renderSettingsForm(containerEl, projectsWrap);
+      },
+      (error: unknown) => {
+        if (generation !== this.renderGeneration || !containerEl.isConnected) return;
+        console.error("[OPA] Failed to load settings:", error);
+        new Notice("Не удалось загрузить настройки OPA. Проверьте консоль; файл настроек не изменен.");
+        projectsWrap.createEl("div", {
+          cls: "setting-item-description",
+          text: "Настройки не загружены из-за ошибки конфигурации. Подробности записаны в консоль.",
+        });
+      }
+    );
   }
 
   /** Сохранить настройки и обновить блоки геймификации. */
@@ -217,7 +241,7 @@ export class ObsidianProjectAutomationSettingTab extends PluginSettingTab {
         );
       const leadDaysSetting = new Setting(deadlineWrap)
         .setName("За сколько дней напоминать")
-        .setDesc("За сколько дней до дедлайна срабатывает напоминание (0 — в день дедлайна)")
+        .setDesc("За сколько дней до дедлайна срабатывает напоминание (0 - в день дедлайна)")
         .addText((t) =>
           t
             .setPlaceholder("1")
@@ -333,7 +357,7 @@ export class ObsidianProjectAutomationSettingTab extends PluginSettingTab {
       this.addXpGoldSetting(
         fixedSection,
         "Блокнот",
-        `XP и Gold за выполнение пункта в блокноте (отметка «Сделано»).${XP_GOLD_HINT}`,
+        `XP и Gold за разбор записи в блокноте (кнопка «Архив»).${XP_GOLD_HINT}`,
         () => settings.gamificationInboxRewards ?? { xp: 5, gold: 2 },
         (v) => (settings.gamificationInboxRewards = v)
       );

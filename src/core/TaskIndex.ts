@@ -3,10 +3,10 @@
  * обновляется точечно по metadataCache.on("changed") / vault rename/delete.
  */
 
-import type { App, EventRef, TAbstractFile } from "obsidian";
-import { TFile } from "obsidian";
+import { TFile, type App, type EventRef, type TAbstractFile } from "obsidian";
 import type { EventBus } from "./EventBus";
 import { DAILY_FOLDER } from "./Paths";
+import { parseCalendarDate } from "./DateUtils";
 
 /** Минимальный контракт для registerEvent (Plugin). */
 export interface EventRegistrar {
@@ -26,6 +26,10 @@ export function normalizeTaskKey(name: string): string {
   return n;
 }
 
+function normalizeTaskPath(path: string): string {
+  return path.split("#")[0].replace(/\\/g, "/").replace(/\.md$/i, "").trim().toLowerCase();
+}
+
 /** Все цели wikilink из строки (игнорирует алиас после |). */
 function extractWikiLinkTargets(text: string): string[] {
   const targets: string[] = [];
@@ -37,38 +41,12 @@ function extractWikiLinkTargets(text: string): string[] {
   return targets;
 }
 
-function parseDateFromFileName(name: string): Date | null {
-  const clean = name.replace(/\.md$/i, "").trim();
-  const formats = [
-    /^(\d{4})-(\d{2})-(\d{2})$/,
-    /^(\d{2})-(\d{2})-(\d{4})$/,
-    /^(\d{2})\.(\d{2})\.(\d{4})$/,
-  ];
-  for (const re of formats) {
-    const m = clean.match(re);
-    if (!m) continue;
-    let year: number, month: number, day: number;
-    if (m[1].length === 4) {
-      year = parseInt(m[1], 10);
-      month = parseInt(m[2], 10) - 1;
-      day = parseInt(m[3], 10);
-    } else {
-      day = parseInt(m[1], 10);
-      month = parseInt(m[2], 10) - 1;
-      year = parseInt(m[3], 10);
-    }
-    const d = new Date(year, month, day);
-    if (!isNaN(d.getTime())) return d;
-  }
-  return null;
-}
-
 function getHeadingPairs(app: App, file: TFile): TaskDateEntry[] {
   const cache = app.metadataCache.getFileCache(file);
-  let date = parseDateFromFileName(file.name);
-  if (!date && file.stat?.mtime) date = new Date(file.stat.mtime);
-  if (!date) return [];
-  const resolvedDate = date;
+  // Дата записи - только из имени ежедневной заметки. Прочие файлы в папке daily (README, шаблон)
+  // датами задач не считаются: время их изменения ничего не говорит о работе над задачей.
+  const resolvedDate = parseCalendarDate(file.name);
+  if (!resolvedDate) return [];
 
   const pairs: TaskDateEntry[] = [];
   const seenInFile = new Set<string>();
@@ -77,6 +55,19 @@ function getHeadingPairs(app: App, file: TFile): TaskDateEntry[] {
     if (!key || seenInFile.has(key)) return;
     seenInFile.add(key);
     pairs.push({ taskName: key, date: new Date(resolvedDate.getTime()) });
+  };
+  const addLinkTarget = (link: string) => {
+    const destination = app.metadataCache.getFirstLinkpathDest(link, file.path);
+    if (destination) {
+      const pathKey = `path:${normalizeTaskPath(destination.path)}`;
+      if (!seenInFile.has(pathKey)) {
+        seenInFile.add(pathKey);
+        pairs.push({ taskName: pathKey, date: new Date(resolvedDate.getTime()) });
+      }
+      addTask(destination.basename);
+      return;
+    }
+    addTask(link);
   };
 
   const headings = cache?.headings ?? [];
@@ -90,17 +81,17 @@ function getHeadingPairs(app: App, file: TFile): TaskDateEntry[] {
     for (const l of links) {
       const pos = l.position.start.offset;
       if (pos >= start && pos <= end) {
-        addTask(l.link);
+        addLinkTarget(l.link);
       }
     }
 
     // 2. Wikilink в тексте заголовка (если Obsidian сохранил [[...]] в h.heading)
     for (const target of extractWikiLinkTargets(h.heading)) {
-      addTask(target);
+      addLinkTarget(target);
     }
 
-    // 3. Текст заголовка — как в TaskView (.includes при чтении индекса)
-    if (h.heading.trim()) {
+    // 3. Обычный текст заголовка сопоставляется только как полное имя задачи.
+    if (h.heading.trim() && !extractWikiLinkTargets(h.heading).length) {
       addTask(h.heading);
     }
   }
@@ -122,6 +113,8 @@ export class TaskIndex {
   private resolvedCallback: (() => void) | null = null;
   private resolvedRebuildTimer: ReturnType<typeof setTimeout> | null = null;
   private notifyTimer: ReturnType<typeof setTimeout> | null = null;
+  private vaultEventRefs: EventRef[] = [];
+  private subscriptionGeneration = 0;
   private subscribed = false;
 
   constructor(
@@ -143,6 +136,7 @@ export class TaskIndex {
       on(e: string, cb: (...args: never[]) => void): EventRef;
     };
     const ref = vault.on(name, callback);
+    this.vaultEventRefs.push(ref);
     if (this.registrar) this.registrar.registerEvent(ref);
   }
 
@@ -161,25 +155,16 @@ export class TaskIndex {
   }
 
   /**
-   * Даты по имени задачи. Сначала точное совпадение ключа, затем — как в TaskView (includes).
+   * Даты по точному нормализованному имени или пути задачи.
    */
-  getDatesForTask(taskName: string): Date[] {
+  getDatesForTask(taskName: string, taskPath?: string): Date[] {
+    if (taskPath) {
+      const byPath = this.map.get(`path:${normalizeTaskPath(taskPath)}`);
+      if (byPath?.length) return [...byPath];
+    }
     const key = normalizeTaskKey(taskName);
     const direct = this.map.get(key);
-    if (direct?.length) return [...direct];
-
-    const merged: Date[] = [];
-    const seen = new Set<number>();
-    for (const [indexedName, dates] of this.map) {
-      if (!indexedName.includes(key) && !key.includes(indexedName)) continue;
-      for (const d of dates) {
-        const t = d.getTime();
-        if (seen.has(t)) continue;
-        seen.add(t);
-        merged.push(d);
-      }
-    }
-    return merged;
+    return direct?.length ? [...direct] : [];
   }
 
   private removeFileContribution(filePath: string): void {
@@ -242,12 +227,19 @@ export class TaskIndex {
 
   /** Подписаться на изменения и при первом вызове выполнить buildFull. */
   ensureSubscribed(): void {
-    if (this.byFile.size === 0 && this.dailyPaths.size === 0) this.buildFull();
     if (this.subscribed) return;
+    if (this.byFile.size === 0 && this.dailyPaths.size === 0) this.buildFull();
     this.subscribed = true;
+    const generation = ++this.subscriptionGeneration;
 
     if (!this.resolvedCallback) {
-      this.resolvedCallback = () => this.scheduleResolvedRebuild();
+      // Первая полная сборка могла пройти до окончания индексации хранилища - после первого «resolved»
+      // пересобираем ещё раз. Дальше «resolved» приходит после каждой правки любого файла, и полная
+      // пересборка там не нужна: точечные изменения ежедневных покрывает обработчик «changed».
+      this.resolvedCallback = () => {
+        this.detachResolved();
+        this.scheduleResolvedRebuild();
+      };
       this.app.metadataCache.on("resolved", this.resolvedCallback);
     }
 
@@ -271,9 +263,9 @@ export class TaskIndex {
         this.applyFileContribution(file.path, pairs);
         this.notifyUpdated();
       };
-      // create — только после layoutReady (иначе стартовый прогон всех файлов).
+      // create - только после layoutReady (иначе стартовый прогон всех файлов).
       const attachCreate = () => {
-        if (!this.createCallback) return;
+        if (!this.createCallback || !this.subscribed || generation !== this.subscriptionGeneration) return;
         this.registerVaultEvent("create", this.createCallback as (...args: never[]) => void);
       };
       if (this.app.workspace.layoutReady) attachCreate();
@@ -306,6 +298,12 @@ export class TaskIndex {
     }
   }
 
+  private detachResolved(): void {
+    if (!this.resolvedCallback) return;
+    this.app.metadataCache.off("resolved", this.resolvedCallback);
+    this.resolvedCallback = null;
+  }
+
   /** Отписаться от событий (при выгрузке модуля/плагина). */
   unsubscribe(): void {
     if (this.notifyTimer) {
@@ -316,15 +314,14 @@ export class TaskIndex {
       clearTimeout(this.resolvedRebuildTimer);
       this.resolvedRebuildTimer = null;
     }
-    if (this.resolvedCallback) {
-      this.app.metadataCache.off("resolved", this.resolvedCallback);
-      this.resolvedCallback = null;
-    }
+    this.detachResolved();
     if (this.changedCallback) {
       this.app.metadataCache.off("changed", this.changedCallback as (...data: unknown[]) => unknown);
       this.changedCallback = null;
     }
-    // vault-события через registerEvent снимаются при unload плагина автоматически.
+    for (const ref of this.vaultEventRefs) this.app.vault.offref(ref);
+    this.vaultEventRefs = [];
+    this.subscriptionGeneration++;
     this.createCallback = null;
     this.deleteCallback = null;
     this.renameCallback = null;

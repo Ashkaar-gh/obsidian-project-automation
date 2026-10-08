@@ -13,11 +13,11 @@ deadline: "%%deadline%%"
 cssclasses:
   - wide-page
 ---
-## Описании задачи
+## Описание задачи
 
 ## Критерий выполнения
 
-## Cписок подзадач
+## Список подзадач
 - [ ] 
 
 \`\`\`opa-task-view
@@ -41,7 +41,10 @@ export const DEFAULT_DAILY = `%%daily_nav%%
 /** Имя файла примера шаблона задачи в templates/task-templates. */
 export const DEFAULT_TASK_TEMPLATE_EXAMPLE_FILENAME = "task-example.md";
 
-/** Пример шаблона задачи для кнопки в настройках. Показывает suggester и связанные поля. */
+/**
+ * Пример шаблона задачи для кнопки в настройках. Шаблон задаёт проект и группу (opa_project, opa_group)
+ * и скелет заметки; ключи opa_* в созданную задачу не попадают.
+ */
 export const DEFAULT_TASK_TEMPLATE_EXAMPLE = `---
 title: Пример задачи
 project: "%%project%%"
@@ -54,50 +57,13 @@ cssclasses:
   - wide-page
 opa_project: ""
 opa_group: ""
-opa_labels:
-  task: Задача
-  details: Детали
-  preset: Вариант
-  env_name: Окружение
-  env_url: URL
-opa_prompts:
-  - key: task
-    label: Задача
-    optional: true
-  - key: details
-    label: Детали
-    optional: true
-  - key: preset
-    label: Вариант
-    type: suggester
-    options:
-      - id: prod
-        label: Production
-        values:
-          env_name: Production
-          env_url: https://prod.example.com
-      - id: staging
-        label: Staging
-        values:
-          env_name: Staging
-          env_url: https://staging.example.com
-      - id: dev
-        label: Dev
-        values:
-          env_name: Dev
-          env_url: https://dev.example.com
 ---
 ## Описание задачи
 
-## Критерии выполнения
+## Критерий выполнения
 
-## Подзадачи
+## Список подзадач
 - [ ] 
-
-Задача: %%task%%
-Детали: %%details%%
-
-Выбран вариант: **%%env_name%%** — %%env_url%%
 
 \`\`\`opa-task-view
 \`\`\`
