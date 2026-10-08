@@ -9,46 +9,7 @@
     width: 100%;
 }
 
-/* Кнопки и инпуты — в shared-ui.css (.ui-btn-*, .ui-input, .view-btn, .view-input и т.д.) */
-
-.view-modal-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(0, 0, 0, 0.6);
-    z-index: 9999;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    backdrop-filter: blur(2px);
-}
-
-.view-modal {
-    background-color: var(--background-primary);
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 8px;
-    padding: 20px;
-    width: 400px;
-    max-width: 90vw;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-    display: flex;
-    flex-direction: column;
-}
-
-.view-modal h3 {
-    margin-top: 0;
-    margin-bottom: 15px;
-    text-align: center;
-    color: var(--text-normal);
-}
-
-.view-modal-content {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-}
+/* Кнопки и инпуты - в shared-ui.css (.ui-btn-*, .ui-input, .view-btn, .view-input и т.д.) */
 
 /* Модалка настройки напоминания: поуже, без крестика, Enter = Сохранить */
 .opa-reminder-settings-modal {
@@ -73,13 +34,6 @@
 
 .reminder-modal-cancel:hover {
     background: var(--background-modifier-hover);
-}
-
-/* Поле редактирования напоминания — шире */
-.rv-content.is-editing .rv-edit-input,
-.rv-content.is-editing .view-input {
-    min-width: 380px;
-    max-width: 100%;
 }
 
 /* Модалка уведомления о напоминании: шире под длинный текст, кнопки по центру */
@@ -182,9 +136,31 @@
     font-size: 0.95em;
 }
 
+/* Запись блокнота в корзине: текст и под ним «когда · к чему», как в блокноте */
+.trash-item-entry {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
 .trash-item-text {
     flex: 0 1 auto;
     min-width: 0;
+    /* Строки напоминаний и записи, которые не удалось отрисовать, - простой текст с переносами */
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* Записи блокнота в корзине - markdown, как в блокноте, но приглушённые, как всё в корзине; картинки поменьше */
+.trash-item-text.inbox-text {
+    color: inherit;
+}
+
+.trash-item-text.inbox-text:not(.is-plain) {
+    white-space: normal;
+}
+
+.trash-item .inbox-text img {
+    max-height: 160px;
 }
 
 .trash-item-badge {
@@ -206,10 +182,83 @@
     margin-top: 10px;
 }
 
-.inbox-container {
-    margin-top: 10px;
+/* ---- Блокнот: поле записи (многострочное, растёт с текстом) ---- */
+.inbox-add-form {
+    align-items: flex-end;
 }
 
+.inbox-composer-input {
+    box-sizing: border-box;
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: 640px;
+    min-height: 32px;
+    margin: 0;
+    padding: 6px 10px;
+    font-family: var(--font-ui);
+    font-size: 0.9em;
+    line-height: 1.45;
+    border-radius: 4px;
+    border: 1px solid var(--background-modifier-border);
+    background-color: var(--background-primary-alt);
+    color: var(--text-normal);
+    resize: none;
+    overflow-y: hidden;
+    outline: none;
+    box-shadow: none;
+}
+
+.inbox-composer-input:focus,
+.inbox-composer-input:focus-visible {
+    border-color: var(--interactive-accent);
+    box-shadow: none;
+}
+
+.is-mobile .inbox-composer-input,
+.inbox-line .inbox-edit-input {
+    max-width: 100%;
+}
+
+/* Поле ввода блокнота с «Относится к»: поле привязки - под полем текста, во всю его ширину,
+   «Добавить» - справа от текста, как раньше (в DOM кнопка после поля привязки: Tab из текста идёт в привязку) */
+.inbox-add-form.has-link-field {
+    display: grid;
+    grid-template-columns: minmax(0, 640px) auto;
+    justify-content: start;
+    align-items: end;
+    column-gap: 8px;
+    row-gap: 6px;
+}
+
+.inbox-add-form.has-link-field .inbox-composer-input {
+    grid-column: 1;
+    grid-row: 1;
+    max-width: none;
+}
+
+.inbox-add-form.has-link-field > button {
+    grid-column: 2;
+    grid-row: 1;
+}
+
+.inbox-add-form.has-link-field .opa-inbox-link-field {
+    grid-column: 1;
+    grid-row: 2;
+    margin-top: 0;
+}
+
+/* Правка записи: текст и под ним «Относится к» - во всю строку */
+.inbox-line .inbox-edit {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.inbox-edit .opa-inbox-link-field {
+    margin-top: 6px;
+}
+
+/* ---- Блокнот: записи ---- */
+/* Кнопки - по центру записи по вертикали (текст с подписью «когда · к чему» под ним) */
 .inbox-line {
     border-bottom: 1px solid var(--background-modifier-border);
     display: flex;
@@ -219,11 +268,275 @@
     min-height: 40px;
 }
 
-.inbox-text {
+.inbox-line:last-child {
+    border-bottom: none;
+}
+
+/* Группа записей с одной привязкой: заголовок «задача · проект» и число записей;
+   записи - под ним, с отступом и линией слева, подпись привязки у них не повторяется */
+.inbox-group {
+    border-bottom: 1px solid var(--background-modifier-border);
+    padding: 6px 0 2px;
+}
+
+.inbox-list > .inbox-group:last-child {
+    border-bottom: none;
+}
+
+.inbox-group-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    min-height: 32px;
+    padding: 2px 5px;
+}
+
+.inbox-group-header .inbox-link {
+    font-size: var(--font-ui-small);
+}
+
+.inbox-group-header .inbox-link a.internal-link.inbox-link-task,
+.inbox-group-header .inbox-link span.inbox-link-task {
+    color: var(--text-normal);
+    font-weight: 600;
+}
+
+.inbox-group-count {
+    padding: 0 8px;
+    border-radius: 12px;
+    background: var(--background-modifier-border);
+    font-size: var(--font-ui-smaller);
+    color: var(--text-faint);
+}
+
+.inbox-group-list {
+    margin-left: 12px;
+    padding-left: 8px;
+    border-left: 2px solid var(--background-modifier-border);
+}
+
+/* «Блокнот» в заметке задачи и проекта (opa-task-inbox, opa-project-inbox; общий класс opa-note-inbox):
+   заголовок - как разделы заметки (##), записи - как в блокноте. Без записей блок скрыт (opa-hidden) вместе с рамкой
+   блока в режиме редактирования. Только прямой потомок рамки: вставка ![[задачи]] в другую заметку целиком
+   не прячется. */
+.opa-note-inbox .opa-section {
+    margin-bottom: var(--p-spacing, 1rem);
+}
+
+.opa-note-inbox .opa-section-header {
+    margin-bottom: 4px;
+}
+
+/* Текст записей и заголовки групп (записи одной задачи в блоке проекта) - по левому краю заголовков и текста заметки */
+.opa-note-inbox .inbox-line,
+.opa-note-inbox .inbox-group-header {
+    padding-left: 0;
+}
+
+.opa-note-inbox .opa-section-title {
+    font-family: var(--h2-font, inherit);
+    font-size: var(--h2-size);
+    font-weight: var(--h2-weight, 600);
+    font-variant: var(--h2-variant, normal);
+    letter-spacing: var(--h2-letter-spacing, normal);
+    line-height: var(--h2-line-height, 1.2);
+    color: var(--h2-color, var(--text-normal));
+}
+
+.markdown-source-view.mod-cm6 .cm-embed-block:has(> .opa-note-inbox) {
+    box-shadow: none !important;
+    border: none !important;
+    outline: none !important;
+    background-color: transparent !important;
+    cursor: default !important;
+    /* стрелка сворачивания стоит левее блока */
+    overflow: visible !important;
+}
+
+.markdown-source-view.mod-cm6 .cm-embed-block:has(> .opa-note-inbox) > .edit-block-button {
+    display: none !important;
+}
+
+.markdown-source-view.mod-cm6 .cm-embed-block:has(> .opa-note-inbox.opa-hidden) {
+    display: none;
+}
+
+.inbox-entry {
+    flex: 0 1 auto;
+    min-width: 0;
     margin-right: 15px;
+}
+
+.inbox-text {
     color: var(--text-normal);
     word-break: break-word;
-    flex: 0 1 auto;
+}
+
+/* markdown записи - компактно, как строка списка, а не как заметка */
+.inbox-text :is(p, ul, ol, pre, blockquote, table) {
+    margin-top: 0.2em;
+    margin-bottom: 0.2em;
+}
+
+.inbox-text > div:first-child > :first-child {
+    margin-top: 0;
+}
+
+.inbox-text > div:last-child > :last-child {
+    margin-bottom: 0;
+}
+
+.inbox-text img {
+    max-width: 100%;
+    max-height: 320px;
+}
+
+/* Простой текст с переносами: запись, которую не удалось отрисовать */
+.inbox-text.is-plain {
+    white-space: pre-wrap;
+}
+
+/* Архив: картинки поменьше, кнопка более ранних записей */
+.inbox-archive-list .inbox-text img {
+    max-height: 160px;
+}
+
+.inbox-archive-more {
+    margin: 4px 0 8px;
+    font-size: var(--font-ui-smaller);
+}
+
+/* Под текстом записи: время записи и к чему она относится («сегодня 14:05 · Trino ACL · Trino») */
+.inbox-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 8px;
+    margin-top: 2px;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-faint);
+}
+
+.inbox-time {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-faint);
+}
+
+.inbox-link {
+    min-width: 0;
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+}
+
+.inbox-link a.internal-link {
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+.inbox-link a.internal-link:hover {
+    color: var(--text-accent);
+    text-decoration: underline;
+}
+
+.inbox-link .inbox-link-sep {
+    color: var(--text-faint);
+}
+
+/* Заметку задачи удалили: имя зачёркнуто, запись всё равно можно разобрать */
+.inbox-link.is-unresolved .inbox-link-task {
+    text-decoration: line-through;
+    color: var(--text-faint);
+}
+
+.inbox-empty-hint {
+    margin-top: 4px;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-faint);
+}
+
+/* Окно «Запись в блокнот» */
+.opa-quick-capture-modal {
+    width: 560px;
+    max-width: 92vw;
+}
+
+.opa-quick-capture-modal .inbox-composer-input {
+    max-width: none;
+    min-height: 84px;
+    font-size: var(--font-ui-medium);
+}
+
+/* «Относится к»: одна строка под текстом записи - подпись и поле поиска задачи или проекта во всю ширину,
+   как поле текста над ним; крестик - внутри поля, справа */
+.opa-inbox-link-field {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.opa-inbox-link-field .opa-inbox-link-label {
+    flex-shrink: 0;
+    font-size: var(--font-ui-small);
+    color: var(--text-muted);
+}
+
+.opa-inbox-link-field .opa-inbox-link-control {
+    position: relative;
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.opa-inbox-link-field .opa-inbox-link-input {
+    box-sizing: border-box;
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+    height: 32px;
+    padding-right: 32px;
+    font-size: var(--font-ui-small);
+}
+
+.opa-inbox-link-field .opa-inbox-link-clear {
+    position: absolute;
+    top: 50%;
+    right: 4px;
+    transform: translateY(-50%);
+    display: none;
+    padding: 4px;
+    height: auto;
+}
+
+.opa-inbox-link-field.has-link .opa-inbox-link-clear {
+    display: flex;
+}
+
+/* Статус задачи в списке выбора: «⚙️ В работе · Trino» */
+.suggestion-note .opa-link-status {
+    color: var(--text-muted);
+}
+
+/* Кнопки как в других окнах плагина: рядом, справа */
+.opa-quick-capture-modal .opa-quick-capture-buttons {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 12px;
+}
+
+.opa-quick-capture-modal .opa-quick-capture-buttons button {
+    width: auto;
+    min-width: 80px;
+}
+
+/* Подсказка «Ctrl+Enter - сохранить» слева в строке кнопок */
+.opa-quick-capture-modal .opa-quick-capture-shortcut {
+    margin-right: auto;
+    align-self: center;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
 }
 
 .inbox-actions {
@@ -240,14 +553,14 @@
     opacity: 1;
 }
 
-.inbox-archive {
-    margin-top: 1em;
-    padding-top: 1em;
-    border-top: 1px solid var(--background-modifier-border);
+/* Во время правки поле занимает всю строку, кнопок нет */
+.inbox-line.is-editing .inbox-actions {
+    display: none;
 }
 
-.reminders-wrapper {
-    width: 100%;
+/* Архив отделён от последней записи отступом, без линии (как разделы напоминаний) */
+.inbox-archive {
+    margin-top: 1em;
 }
 
 .rv-empty {
@@ -349,12 +662,6 @@
     min-width: 0;
 }
 
-.rv-content.is-editing {
-    max-width: 100% !important;
-    width: 100% !important;
-    padding-right: 0;
-}
-
 .rv-text {
     font-size: 0.95em;
     color: var(--text-normal);
@@ -439,7 +746,7 @@
     background: var(--background-secondary);
 }
 
-/* Вложенные элементы в группах архива — отступ для визуального разделения */
+/* Вложенные элементы в группах архива - отступ для визуального разделения */
 .rv-archive-sublist {
     padding-left: 1.5em;
     margin-left: 0.25em;

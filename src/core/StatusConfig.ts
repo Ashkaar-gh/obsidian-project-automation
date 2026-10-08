@@ -27,8 +27,8 @@ export function isEmptyStatus(statusStr: string | null | undefined): boolean {
 }
 
 export function getConfig(statusStr: string | null | undefined): StatusItem | undefined {
-  const s = (statusStr ?? "").toLowerCase();
-  return STATUS_CONFIG.find((c) => s.includes(c.key));
+  const s = (statusStr ?? "").toLowerCase().trim();
+  return STATUS_CONFIG.find((c) => s === c.key);
 }
 
 export function getIcon(statusStr: string | null | undefined): string {
@@ -53,6 +53,3 @@ export function getDropdownOptions(): { value: string; label: string; icon: stri
     })),
   ];
 }
-
-export const REFRESH_DELAY_MS = 500;
-export const REFRESH_DELAY_MS_FAST = 100;

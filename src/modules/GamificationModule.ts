@@ -1,7 +1,8 @@
-import type { ModuleContext } from "./types";
+import { Modal, Notice, TFile, type App, type TAbstractFile } from "obsidian";
+import type { ModuleContext, PluginModule } from "./types";
 import {
+  emptyGamificationState,
   getLevel,
-  getXpForLevel,
   getXpInCurrentLevel,
   getXpPerLevel,
   getRank,
@@ -9,10 +10,11 @@ import {
   type GamificationState,
   type PurchaseRecord,
 } from "../core/GamificationState";
+import { MONTH_NAMES_RU, formatDateDDMMYYYY } from "../core/DateUtils";
 import { UI_LABELS } from "../ui/Labels";
 import { createCollapsibleSection } from "../ui/CollapsibleSection";
 import { BlockRegistry } from "../ui/BlockRegistry";
-import { Modal, Notice, TFile } from "obsidian";
+import { isRenderUnchanged, markRendered, renderSignature } from "../ui/RenderCache";
 
 /** Формат даты из frontmatter в DD-MM-YYYY (как на доске задач). */
 function formatDeadlineDisplay(raw: string): string {
@@ -27,28 +29,25 @@ function formatDeadlineDisplay(raw: string): string {
 }
 
 function getDeadlineForTask(
-  app: { vault: { getAbstractFileByPath: (p: string) => unknown }; metadataCache: { getFileCache: (f: TFile) => { frontmatter?: { date?: unknown } } | null } },
+  app: App,
   path: string,
   savedDeadline: string | undefined
 ): string {
-  if (savedDeadline && savedDeadline.trim()) return formatDeadlineDisplay(savedDeadline);
   const file = app.vault.getAbstractFileByPath(path);
-  if (!file || !(file instanceof TFile)) return "—";
-  const cache = app.metadataCache.getFileCache(file);
-  const d = cache?.frontmatter?.date;
-  if (d == null) return "—";
-  const str = Array.isArray(d) ? d[0] : d;
-  if (typeof str !== "string") return "—";
-  return formatDeadlineDisplay(str);
+  if (file instanceof TFile) {
+    const deadline = app.metadataCache.getFileCache(file)?.frontmatter?.deadline;
+    const current = Array.isArray(deadline) ? deadline[0] : deadline;
+    if (typeof current === "string" && current.trim()) return formatDeadlineDisplay(current);
+  }
+  // Старые records сохраняли frontmatter.date в поле deadline.
+  return savedDeadline?.trim() ? formatDeadlineDisplay(savedDeadline) : "-";
 }
 
-export class GamificationModule {
+export class GamificationModule implements PluginModule {
   private ctx: ModuleContext;
   private registry: BlockRegistry;
   private offCompleted: (() => void) | null = null;
   private offUncompleted: (() => void) | null = null;
-  /** Пути обработанных задач для быстрой проверки (вместо линейного поиска по массиву). */
-  private processedPaths: Set<string> | null = null;
 
   constructor(ctx: ModuleContext) {
     this.ctx = ctx;
@@ -57,92 +56,69 @@ export class GamificationModule {
       isEnabled: () => ctx.plugin.settings.enableGamification,
       debounceMs: 500,
       domSelector: ".opa-gamification-view",
-      createRefresh: (el) => () => this.render(el),
+      createRefresh: (el) => (force) => this.render(el, force),
     });
   }
 
-  private async getProcessedPaths(state: GamificationState): Promise<Set<string>> {
-    if (!this.processedPaths) this.processedPaths = new Set(state.processedTaskPaths);
-    return this.processedPaths;
-  }
-
-  private onVaultModify = (file: import("obsidian").TAbstractFile): void => {
-    if (file.path === this.ctx.plugin.getGamificationDataPath()) {
-      this.processedPaths = null;
-      this.scheduleRefresh();
-    }
+  private onVaultModify = (file: TAbstractFile): void => {
+    if (file.path === this.ctx.plugin.getGamificationDataPath()) this.scheduleRefresh();
   };
 
   load(): void {
     this.offCompleted = this.ctx.eventBus.on("task:completed", async (data) => {
       if (!this.ctx.plugin.settings.enableGamification) return;
-      const state = await this.ctx.plugin.getGamificationState();
       const L = UI_LABELS.gamification;
-      const processed = await this.getProcessedPaths(state);
-
-      if (processed.has(data.path)) {
+      let rewarded = false;
+      const state = await this.ctx.plugin.updateGamificationState((state) => {
         const existingTask = state.processedTasks.find((t) => t.path === data.path);
         if (existingTask) {
           existingTask.rewardMessage = L.rewardsReceived;
           existingTask.completedAt = new Date().toISOString();
-          this.ctx.plugin.scheduleGamificationSave();
-          this.registry.runRefresh();
+          return;
         }
-        return;
-      }
-
-      const reward = getRewardForDifficulty(data.difficulty, this.ctx.plugin.gamificationDefaults);
-      state.xp += reward.xp;
-      state.gold += reward.gold;
-      state.processedTaskPaths.push(data.path);
-      processed.add(data.path);
-      const taskName = data.path.split("/").pop()?.replace(/\.md$/i, "") ?? data.path;
-      let deadline: string | undefined;
-      const file = this.ctx.app.vault.getAbstractFileByPath(data.path);
-      if (file && "path" in file) {
-        const cache = this.ctx.app.metadataCache.getFileCache(file as import("obsidian").TFile);
-        const fm = cache?.frontmatter;
-        if (fm?.date != null) {
-          const d = Array.isArray(fm.date) ? fm.date[0] : fm.date;
-          deadline = typeof d === "string" ? d : undefined;
+        const reward = getRewardForDifficulty(data.difficulty, this.ctx.plugin.gamificationDefaults);
+        state.xp += reward.xp;
+        state.gold += reward.gold;
+        state.processedTaskPaths.push(data.path);
+        const taskName = data.path.split("/").pop()?.replace(/\.md$/i, "") ?? data.path;
+        let deadline: string | undefined;
+        const file = this.ctx.app.vault.getAbstractFileByPath(data.path);
+        if (file instanceof TFile) {
+          const fm = this.ctx.app.metadataCache.getFileCache(file)?.frontmatter;
+          if (fm?.deadline != null) {
+            const d = Array.isArray(fm.deadline) ? fm.deadline[0] : fm.deadline;
+            deadline = typeof d === "string" ? d : undefined;
+          }
         }
-      }
-      const completedAt = new Date().toISOString();
-      state.processedTasks.push({
-        path: data.path,
-        completedAt,
-        taskName,
-        deadline,
-        rewardXp: reward.xp,
-        rewardGold: reward.gold,
-        rewardMessage: L.rewardsReceived,
+        state.processedTasks.push({
+          path: data.path, completedAt: new Date().toISOString(), taskName, deadline,
+          rewardXp: reward.xp, rewardGold: reward.gold, rewardMessage: L.rewardsReceived,
+        });
+        rewarded = true;
       });
-      this.ctx.plugin.scheduleGamificationSave();
-      new Notice(L.rewardLine(reward.xp, reward.gold));
+      if (rewarded) {
+        const completed = state.processedTasks.find((task) => task.path === data.path);
+        new Notice(L.rewardLine(completed?.rewardXp ?? 0, completed?.rewardGold ?? 0));
+      }
       this.registry.runRefresh();
     });
 
     this.offUncompleted = this.ctx.eventBus.on("task:uncompleted", async (data) => {
       if (!this.ctx.plugin.settings.enableGamification) return;
-      const state = await this.ctx.plugin.getGamificationState();
       const L = UI_LABELS.gamification;
-      const processed = await this.getProcessedPaths(state);
-      if (processed.has(data.path)) {
+      await this.ctx.plugin.updateGamificationState((state) => {
         const existingTask = state.processedTasks.find((t) => t.path === data.path);
-        if (existingTask) {
-          existingTask.rewardMessage = L.returnedToWork;
-          this.ctx.plugin.scheduleGamificationSave();
-          this.registry.runRefresh();
-        }
-      }
+        if (existingTask) existingTask.rewardMessage = L.returnedToWork;
+      });
+      this.registry.runRefresh();
     });
 
     this.ctx.plugin.registerEvent(this.ctx.app.vault.on("modify", this.onVaultModify));
     this.ctx.plugin.registerEvent(this.ctx.app.workspace.on("active-leaf-change", this.registry.scheduleRefresh));
 
-    this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-gamification-view", (_source, el) => {
+    this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-gamification-view", (_source, el, ctx) => {
       el.addClass("opa-gamification-view");
-      this.registry.register(el, () => this.render(el));
+      this.registry.register(el, (force) => this.render(el, force), ctx);
     });
   }
 
@@ -160,7 +136,7 @@ export class GamificationModule {
     this.registry.runRefresh();
   }
 
-  private async render(container: HTMLElement): Promise<void> {
+  private async render(container: HTMLElement, force = true): Promise<void> {
     if (!this.ctx.plugin.settings.enableGamification) {
       container.empty();
       container.addClass("opa-hidden");
@@ -175,16 +151,21 @@ export class GamificationModule {
       try {
         state = await this.ctx.plugin.getGamificationState();
       } catch {
-        state = { xp: 0, gold: 0, processedTaskPaths: [], processedTasks: [], streaks: {}, purchaseHistory: [], shop: [] };
+        state = emptyGamificationState();
       }
+      // Магазин заполняется товарами из defaults.json один раз - пока он ни разу не сохранялся.
+      // Пустой список означает, что пользователь сам удалил все товары: заново его не заполняем.
       const defaultShop = this.ctx.plugin.gamificationDefaults.defaultShop;
-      if ((!state.shop || state.shop.length === 0) && defaultShop?.length) {
-        state.shop = [...defaultShop];
-        this.ctx.plugin.scheduleGamificationSave();
+      if (state.shop === undefined && defaultShop?.length) {
+        state = await this.ctx.plugin.updateGamificationState((current) => { current.shop = [...defaultShop]; });
       }
 
+      const signature = renderSignature("gamification", state, this.ctx.plugin.gamificationDefaults);
+      if (!force && isRenderUnchanged(container, signature)) return;
+
       container.empty();
-      const body = createCollapsibleSection(container, "Прогресс", "gamification");
+      markRendered(container, signature);
+      const body = createCollapsibleSection(container, UI_LABELS.blockTitles.gamification, "gamification");
 
       const cfg = this.ctx.plugin.gamificationDefaults;
       const level = getLevel(state.xp, cfg.xpLevelBase);
@@ -258,20 +239,12 @@ export class GamificationModule {
     const tasks = [...state.processedTasks].sort(
       (a, b) => new Date(b.completedAt ?? 0).getTime() - new Date(a.completedAt ?? 0).getTime()
     );
-    const formatDate = (iso: string | null | undefined) => {
-      if (!iso) return "—";
-      const d = new Date(iso);
-      return `${d.getDate().toString().padStart(2, "0")}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getFullYear()}`;
-    };
+    const formatDate = (iso: string | null | undefined) => (iso ? formatDateDDMMYYYY(new Date(iso)) : "-");
     const monthKey = (iso: string | null | undefined): string | null => {
       if (!iso) return null;
       const d = new Date(iso);
       return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
     };
-    const monthNames = [
-      "январь", "февраль", "март", "апрель", "май", "июнь",
-      "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
-    ];
     const now = new Date();
     const currentYear = now.getFullYear();
     let selectedYear = currentYear;
@@ -312,7 +285,7 @@ export class GamificationModule {
           if (t.rewardXp != null && t.rewardGold != null) {
             rewardEl.createEl("span", { cls: "gamification-completed-reward-text", text: L.rewardLine(t.rewardXp, t.rewardGold) });
             if (t.rewardMessage) rewardEl.createEl("div", { cls: "gamification-completed-back-in-work", text: t.rewardMessage });
-          } else rewardEl.setText("—");
+          } else rewardEl.setText("-");
         }
       }
     };
@@ -332,7 +305,7 @@ export class GamificationModule {
     const yearNext = yearStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "›" });
 
     const updateStepperLabels = (): void => {
-      monthValue.setText(monthNames[parseInt(selectedMonth, 10) - 1] ?? "");
+      monthValue.setText(MONTH_NAMES_RU[parseInt(selectedMonth, 10) - 1] ?? "");
       yearValue.setText(String(selectedYear));
     };
 
@@ -459,16 +432,16 @@ export class GamificationModule {
         const dateStr = date.toLocaleDateString("ru-RU", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
         item.createEl("span", { text: dateStr, cls: "gamification-purchased-date" });
         const what = item.createEl("div", { cls: "gamification-purchased-what" });
-        what.setText(r.description ? `${r.name} — ${r.description}` : r.name);
+        what.setText(r.description ? `${r.name} - ${r.description}` : r.name);
         item.createEl("span", { text: `-${r.cost} ${L.gold}`, cls: "gamification-purchased-cost" });
         const delBtn = item.createEl("button", { text: UI_LABELS.common.delete, cls: "gamification-purchased-del" });
         delBtn.addEventListener("click", async () => {
-          const s = await this.ctx.plugin.getGamificationState();
           const pred = (h: unknown): h is PurchaseRecord =>
             typeof h === "object" && h != null && "purchasedAt" in h && "name" in h &&
             (h as PurchaseRecord).purchasedAt === r.purchasedAt && (h as PurchaseRecord).name === r.name;
-          s.purchaseHistory = (s.purchaseHistory as PurchaseRecord[]).filter((h) => !pred(h));
-          this.ctx.plugin.scheduleGamificationSave();
+          const s = await this.ctx.plugin.updateGamificationState((current) => {
+            current.purchaseHistory = current.purchaseHistory.filter((h) => !pred(h));
+          });
           this.scheduleRefresh();
           modal.close();
           this.openPurchasedModal(s);
@@ -478,9 +451,7 @@ export class GamificationModule {
     const footer = modal.contentEl.createEl("div", { cls: "gamification-purchased-footer" });
     const clearBtn = footer.createEl("button", { text: L.clearHistory, cls: "mod-secondary" });
     clearBtn.addEventListener("click", async () => {
-      const s = await this.ctx.plugin.getGamificationState();
-      s.purchaseHistory = [];
-      this.ctx.plugin.scheduleGamificationSave();
+      await this.ctx.plugin.updateGamificationState((current) => { current.purchaseHistory = []; });
       this.scheduleRefresh();
       modal.close();
     });
@@ -539,9 +510,7 @@ export class GamificationModule {
         const description = (row.querySelector(".gamification-shop-modal-desc") as HTMLTextAreaElement)?.value?.trim();
         shop.push({ name, cost, description: description || undefined });
       });
-      const s = await this.ctx.plugin.getGamificationState();
-      s.shop = shop;
-      this.ctx.plugin.scheduleGamificationSave();
+      await this.ctx.plugin.updateGamificationState((current) => { current.shop = shop; });
       this.scheduleRefresh();
       modal.close();
     });
@@ -554,12 +523,11 @@ export class GamificationModule {
       new Notice("Недостаточно золота");
       return;
     }
-    current.gold -= item.cost;
-    current.purchaseHistory = [
-      ...current.purchaseHistory,
-      { purchasedAt: new Date().toISOString(), name: item.name, description: item.description, cost: item.cost },
-    ];
-    this.ctx.plugin.scheduleGamificationSave();
+    await this.ctx.plugin.updateGamificationState((state) => {
+      if (state.gold < item.cost) return;
+      state.gold -= item.cost;
+      state.purchaseHistory.push({ purchasedAt: new Date().toISOString(), name: item.name, description: item.description, cost: item.cost });
+    });
     this.scheduleRefresh();
   }
 }

@@ -3,8 +3,8 @@
  * Группировка по group, сводка по статусам, TOC, сворачиваемые группы, смена статуса в таблице.
  */
 
-import { Modal, type TFile } from "obsidian";
-import type { ModuleContext } from "./types";
+import { Modal, Notice, type App, type EventRef, type TFile } from "obsidian";
+import type { ModuleContext, PluginModule } from "./types";
 import { Paths } from "../core/Paths";
 import {
   getIcon,
@@ -14,12 +14,33 @@ import {
   STATUS_CONFIG,
   EMPTY_STATUS_ICON,
 } from "../core/StatusConfig";
+import { updateFrontmatter, removeFrontmatterKey, appendLineToTaskDescriptionSection } from "../core/FileIO";
 import { UI_LABELS } from "../ui/Labels";
 import { createCollapsibleSection } from "../ui/CollapsibleSection";
 import { BlockRegistry } from "../ui/BlockRegistry";
-import { updateFrontmatter, removeFrontmatterKey, appendLineToTaskDescriptionSection } from "../core/FileIO";
+import { isRenderUnchanged, markRendered, renderSignature } from "../ui/RenderCache";
+import { formatDateDDMMYYYY, parseCalendarDate } from "../core/DateUtils";
+import { isTaskNote } from "../core/TaskNote";
 
 const UNGROUPED_KEY = "Ungrouped";
+
+/** Селектор всех блоков модуля - для восстановления реестра после detach вкладки. */
+const BLOCK_SELECTOR = ".opa-home-view, .opa-project-view, .opa-projects-view";
+
+/** Класс <select> статуса в строке задачи. */
+const STATUS_SELECT_CLASS = "pv-status-select";
+
+/**
+ * Предельное время, на которое открытый выпадающий список статуса откладывает пересборку таблицы.
+ * Закрытие списка без выбора (клик вне окна, прокрутка) страница не всегда видит - страховка от «зависшей» отсрочки.
+ */
+const STATUS_PICK_TIMEOUT_MS = 12000;
+
+/** Клавиши, открывающие выпадающий список у сфокусированного <select> (пробел, F4, Alt+стрелки, Enter). */
+function opensSelectPopup(e: KeyboardEvent): boolean {
+  if (e.key === " " || e.key === "F4" || e.key === "Enter") return true;
+  return e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp");
+}
 
 interface TaskRow {
   path: string;
@@ -33,7 +54,7 @@ interface TaskRow {
   startDate: Date | null;
   /** Отформатированная дата дедлайна из frontmatter (пустая строка, если нет). */
   deadline: string;
-  /** Дедлайн в прошлом и статус не «Готово» — подсветить красным. */
+  /** Дедлайн в прошлом и статус не «Готово» - подсветить красным. */
   isDeadlineOverdue: boolean;
   difficulty: string | null;
   project: string | null;
@@ -41,47 +62,38 @@ interface TaskRow {
   group: string;
 }
 
-function formatDate(d: Date): string {
-  return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" }).replace(/\./g, "-");
+/** Имя заметки без папки и расширения (null для пустого пути). */
+function getBaseName(path: string | null): string | null {
+  if (!path) return null;
+  return path.split("/").pop()?.replace(/\.md$/i, "") || null;
 }
 
 function getExecutionTime(startDate: Date | null, endDate: Date | null): string {
   if (!startDate) return "";
-  if (startDate && endDate && startDate.getTime() !== endDate.getTime())
-    return `${formatDate(startDate)} - ${formatDate(endDate)}`;
-  return formatDate(startDate);
-}
-
-/** Парсинг даты из frontmatter (DD-MM-YYYY, YYYY-MM-DD, DD.MM.YYYY). */
-function parseDateFromFrontmatter(value: unknown): Date | null {
-  if (value instanceof Date && !isNaN(value.getTime())) return value;
-  if (typeof value !== "string") return null;
-  const clean = value.replace(/\.md$/i, "").trim();
-  const formats: [RegExp, (m: RegExpMatchArray) => { year: number; month: number; day: number }][] = [
-    [/^(\d{4})-(\d{2})-(\d{2})/, (m) => ({ year: parseInt(m[1], 10), month: parseInt(m[2], 10) - 1, day: parseInt(m[3], 10) })],
-    [/^(\d{2})-(\d{2})-(\d{4})/, (m) => ({ year: parseInt(m[3], 10), month: parseInt(m[2], 10) - 1, day: parseInt(m[1], 10) })],
-    [/^(\d{2})\.(\d{2})\.(\d{4})/, (m) => ({ year: parseInt(m[3], 10), month: parseInt(m[2], 10) - 1, day: parseInt(m[1], 10) })],
-  ];
-  for (const [re, toParts] of formats) {
-    const m = clean.match(re);
-    if (!m) continue;
-    const { year, month, day } = toParts(m);
-    const d = new Date(year, month, day);
-    if (!isNaN(d.getTime())) return d;
-  }
-  return null;
+  if (endDate && startDate.getTime() !== endDate.getTime())
+    return `${formatDateDDMMYYYY(startDate)} - ${formatDateDDMMYYYY(endDate)}`;
+  return formatDateDDMMYYYY(startDate);
 }
 
 /** Версия рендера по контейнеру: только последний завершённый рендер обновляет DOM. */
 const projectsListRenderVersion = new WeakMap<HTMLElement, number>();
 const homeRenderVersion = new WeakMap<HTMLElement, number>();
 
-export class TasksDashboardModule {
+export class TasksDashboardModule implements PluginModule {
   private ctx: ModuleContext;
   private registry: BlockRegistry;
   private unsubscribeIndex: (() => void) | null = null;
-  /** Общий кэш строк задач на один цикл refresh — без N полных сканов vault. */
+  /** Общий кэш строк задач на один цикл refresh - без N полных сканов vault. */
   private rowsCache: TaskRow[] | null = null;
+  /** Контейнеры, на которых уже стоят делегированные слушатели выбора статуса. */
+  private interactionBound = new WeakSet<HTMLElement>();
+  /** <select> статуса, у которого сейчас (вероятно) открыт выпадающий список. */
+  private pickingSelect: HTMLSelectElement | null = null;
+  private pickingTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Обновление отложено из-за открытого списка статуса - повторить, когда выбор закончится. */
+  private refreshDeferredByPicking = false;
+  /** Среди отложенных обновлений было принудительное. */
+  private deferredRefreshForce = false;
 
   constructor(ctx: ModuleContext, debounceMs: number) {
     this.ctx = ctx;
@@ -90,46 +102,166 @@ export class TasksDashboardModule {
       isEnabled: () =>
         ctx.plugin.settings.enableTasksDashboard && ctx.plugin.settings.enablePluginRefresh,
       debounceMs,
+      shouldRefresh: (el, force) => {
+        if (!this.isPickingStatusIn(el)) return true;
+        // Пока в блоке открыт список статуса, таблицу не пересобираем: иначе список закрывается,
+        // а фокус уходит с элемента. Обновление повторим по окончании выбора.
+        this.refreshDeferredByPicking = true;
+        this.deferredRefreshForce = this.deferredRefreshForce || force;
+        return false;
+      },
       beforeRefresh: async () => {
         this.rowsCache = await this.getRawTaskRows();
       },
+      domSelector: BLOCK_SELECTOR,
+      createRefresh: (el) => (force) => this.renderBlock(el, force),
     });
+  }
+
+  /** Идёт ли выбор статуса (открыт список) внутри этого блока. */
+  private isPickingStatusIn(el: HTMLElement): boolean {
+    const select = this.pickingSelect;
+    return select != null && el.contains(select) && select.ownerDocument.activeElement === select;
+  }
+
+  /**
+   * Делегированные слушатели контейнера (ставятся один раз, переживают пересборку содержимого):
+   * начало выбора статуса - mousedown или клавиша открытия списка, конец - change, потеря фокуса, Esc.
+   */
+  private ensureInteractionListeners(container: HTMLElement): void {
+    if (this.interactionBound.has(container)) return;
+    this.interactionBound.add(container);
+    const statusSelectOf = (target: EventTarget | null): HTMLSelectElement | null =>
+      target instanceof HTMLSelectElement && target.classList.contains(STATUS_SELECT_CLASS) ? target : null;
+    container.addEventListener("mousedown", (e) => {
+      const select = statusSelectOf(e.target);
+      if (select) this.beginStatusPick(select);
+    });
+    container.addEventListener("keydown", (e) => {
+      const select = statusSelectOf(e.target);
+      if (!select) return;
+      if (e.key === "Escape") this.endStatusPick(select);
+      else if (opensSelectPopup(e)) this.beginStatusPick(select);
+    });
+    // Смена значения: список закрыт, но отложенное обновление здесь не запускаем - обработчик change
+    // сам обновит таблицу после записи файла (иначе таблица успевает пересобраться со старым статусом).
+    container.addEventListener("change", (e) => {
+      const select = statusSelectOf(e.target);
+      if (select) this.endStatusPick(select, false);
+    });
+    container.addEventListener("focusout", (e) => {
+      const select = statusSelectOf(e.target);
+      if (select) this.endStatusPick(select);
+    });
+  }
+
+  private beginStatusPick(select: HTMLSelectElement): void {
+    this.pickingSelect = select;
+    if (this.pickingTimer) clearTimeout(this.pickingTimer);
+    this.pickingTimer = setTimeout(() => this.endStatusPick(select), STATUS_PICK_TIMEOUT_MS);
+  }
+
+  /**
+   * Завершить выбор статуса. select - чей список закрылся (чужой select состояние не сбрасывает);
+   * runDeferred - выполнить ли обновление, отложенное на время выбора.
+   */
+  private endStatusPick(select: HTMLSelectElement | null, runDeferred = true): void {
+    if (select && this.pickingSelect && this.pickingSelect !== select) return;
+    this.pickingSelect = null;
+    if (this.pickingTimer) {
+      clearTimeout(this.pickingTimer);
+      this.pickingTimer = null;
+    }
+    if (runDeferred) this.runDeferredRefresh();
+  }
+
+  /** Выполнить обновление, отложенное из-за открытого списка (принудительное, если таким было отложенное). */
+  private runDeferredRefresh(): void {
+    if (!this.refreshDeferredByPicking) return;
+    this.refreshDeferredByPicking = false;
+    const force = this.deferredRefreshForce;
+    this.deferredRefreshForce = false;
+    if (force) void this.forceRefresh();
+    else this.scheduleRefresh();
+  }
+
+  /** Обновление после собственной смены статуса: учитывает отложенное на время выбора обновление. */
+  private refreshAfterOwnChange(): void {
+    if (this.refreshDeferredByPicking) {
+      this.runDeferredRefresh();
+      return;
+    }
+    this.scheduleRefresh();
+  }
+
+  /**
+   * Сфокусированный элемент таблицы перед пересборкой: путь задачи, чей <select> статуса в фокусе.
+   * После пересборки фокус возвращается на <select> той же задачи (клавиатурная смена статусов не прерывается).
+   */
+  private focusedStatusPath(container: HTMLElement): string | null {
+    const active = container.ownerDocument.activeElement;
+    if (!(active instanceof HTMLSelectElement) || !container.contains(active)) return null;
+    return active.dataset.opaPath ?? null;
+  }
+
+  private restoreStatusFocus(container: HTMLElement, path: string | null): void {
+    if (!path) return;
+    for (const select of Array.from(container.querySelectorAll<HTMLSelectElement>(`select.${STATUS_SELECT_CLASS}`))) {
+      if (select.dataset.opaPath !== path) continue;
+      try {
+        select.focus({ preventScroll: true });
+      } catch {
+        select.focus();
+      }
+      return;
+    }
   }
 
   load(): void {
     this.unsubscribeIndex = this.ctx.eventBus.on("index:updated", this.onStorageChange);
     this.ctx.plugin.registerEvent(this.ctx.app.metadataCache.on("changed", this.onMetadataChanged));
     this.ctx.plugin.registerEvent(this.ctx.app.workspace.on("active-leaf-change", this.onLeafChange));
-    // create/rename/delete — только после layoutReady, иначе при старте vault эмитит create
+    // create/rename/delete - только после layoutReady, иначе при старте vault эмитит create
     // на каждый файл и доска бесконечно рефрешится → зависания.
     this.ctx.app.workspace.onLayoutReady(() => {
       const vault = this.ctx.app.vault as unknown as {
-        on(e: string, cb: (...args: unknown[]) => void): import("obsidian").EventRef;
+        on(e: string, cb: (...args: unknown[]) => void): EventRef;
       };
       this.ctx.plugin.registerEvent(vault.on("create", this.onStorageChange));
       this.ctx.plugin.registerEvent(vault.on("rename", this.onStorageChange));
       this.ctx.plugin.registerEvent(vault.on("delete", this.onStorageChange));
     });
 
-    this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-home-view", (_source, el) => {
+    this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-home-view", (_source, el, ctx) => {
       el.addClass("opa-home-view");
-      this.registry.register(el, () => this.render(el, null));
+      this.registry.register(el, (force) => this.renderBlock(el, force), ctx);
     });
     this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-project-view", (_source, el, ctx) => {
       el.addClass("opa-project-view");
-      const projectFilter = ctx.sourcePath
-        ? this.ctx.app.vault.getAbstractFileByPath(ctx.sourcePath)?.name?.replace(/\.md$/i, "") ?? null
-        : null;
-      const excludePath = ctx.sourcePath ?? null;
-      this.registry.register(el, () => this.render(el, projectFilter, excludePath));
+      if (ctx.sourcePath) el.dataset.opaSourcePath = ctx.sourcePath;
+      this.registry.register(el, (force) => this.renderBlock(el, force), ctx);
     });
-    this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-projects-view", (_source, el) => {
+    this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-projects-view", (_source, el, ctx) => {
       el.addClass("opa-projects-view");
-      this.registry.register(el, () => this.renderProjectsList(el));
+      this.registry.register(el, (force) => this.renderBlock(el, force), ctx);
     });
   }
 
-  private async renderProjectsList(container: HTMLElement): Promise<void> {
+  /**
+   * Отрисовка блока по его классу в DOM. Параметры берутся из самого элемента,
+   * поэтому блок можно перерисовать и без исходного контекста processor'а.
+   * force=false - фоновое обновление: если данные не изменились, DOM не трогаем.
+   */
+  private renderBlock(el: HTMLElement, force = true): Promise<void> {
+    if (el.classList.contains("opa-projects-view")) return this.renderProjectsList(el, force);
+    if (el.classList.contains("opa-project-view")) {
+      const sourcePath = el.dataset.opaSourcePath ?? null;
+      return this.render(el, getBaseName(sourcePath), sourcePath, force);
+    }
+    return this.render(el, null, null, force);
+  }
+
+  private async renderProjectsList(container: HTMLElement, force = true): Promise<void> {
     try {
       const version = (projectsListRenderVersion.get(container) ?? 0) + 1;
       projectsListRenderVersion.set(container, version);
@@ -140,10 +272,13 @@ export class TasksDashboardModule {
       } catch {
         if (projectsListRenderVersion.get(container) !== version) return;
         container.empty();
-        container.createEl("p", { text: "—", cls: "opa-projects-empty" });
+        container.createEl("p", { text: "-", cls: "opa-projects-empty" });
         return;
       }
       if (projectsListRenderVersion.get(container) !== version) return;
+
+      const signature = renderSignature("projects", this.ctx.plugin.settings.enableTasksDashboard, projects);
+      if (!force && isRenderUnchanged(container, signature)) return;
 
       container.empty();
       if (!this.ctx.plugin.settings.enableTasksDashboard) {
@@ -153,13 +288,14 @@ export class TasksDashboardModule {
       container.removeClass("opa-hidden");
 
       const wrap = container.createDiv({ cls: "opa-projects-view-wrap" });
-      const body = createCollapsibleSection(wrap, "Проекты", "projects");
+      const body = createCollapsibleSection(wrap, UI_LABELS.blockTitles.projects, "projects");
 
       if (!projects || projects.length === 0) {
         body.createEl("p", {
-          text: "—",
+          text: "-",
           cls: "opa-projects-empty",
         });
+        markRendered(container, signature);
         return;
       }
 
@@ -169,6 +305,7 @@ export class TasksDashboardModule {
         const link = li.createEl("a", { text: name, cls: "internal-link", href: name });
         link.setAttribute("data-href", name);
       }
+      markRendered(container, signature);
     } catch (e) {
       console.error(e);
     }
@@ -179,53 +316,21 @@ export class TasksDashboardModule {
   };
 
   /** Рефрешить при changed только если файл влияет на доску задач (задача, daily или templates). */
-  private onMetadataChanged = (file: import("obsidian").TFile): void => {
+  private onMetadataChanged = (file: TFile): void => {
     if (!this.isTaskRelevantFile(file)) return;
     this.scheduleRefresh();
   };
 
-  /** Значения project из frontmatter в плоский список непустых строк. */
-  private flattenProjectField(project: unknown): string[] {
-    if (project == null) return [];
-    if (Array.isArray(project)) return project.flatMap((p) => this.flattenProjectField(p));
-    const s = String(project).trim();
-    return s ? [s] : [];
-  }
-
-  /**
-   * Корневая заметка проекта (шаблон project.md): project совпадает с именем файла.
-   * Такие файлы не должны попадать в доску как задачи.
-   */
-  private isProjectHubPage(file: TFile, fm: Record<string, unknown>): boolean {
-    const base = file.basename;
-    for (const v of this.flattenProjectField(fm.project)) {
-      const segment = v.replace(/\.md$/i, "").split("/").pop()?.trim() ?? "";
-      if (segment === base) return true;
-    }
-    return false;
-  }
-
-  /**
-   * Заметка-задача: во frontmatter есть status, project или group.
-   * Корневая страница проекта (project совпадает с именем файла) не считается задачей.
-   */
-  private isTaskNote(file: TFile, cache: { frontmatter?: Record<string, unknown> } | null): boolean {
-    const fm = cache?.frontmatter;
-    if (!fm) return false;
-    if (this.isProjectHubPage(file, fm)) return false;
-    return fm.status != null || fm.project != null || fm.group != null;
-  }
-
-  private isTaskRelevantFile(file: import("obsidian").TFile): boolean {
+  private isTaskRelevantFile(file: TFile): boolean {
     const cache = this.ctx.app.metadataCache.getFileCache(file);
-    if (this.isTaskNote(file, cache)) return true;
+    if (isTaskNote(file, cache)) return true;
     const path = file.path;
     const dailyPrefix = Paths.DAILY_FOLDER.replace(/\/?$/, "") + "/";
     const templatesPrefix = Paths.TEMPLATES_FOLDER.replace(/\/?$/, "") + "/";
     return path.startsWith(dailyPrefix) || path.startsWith(templatesPrefix);
   }
 
-  /** При переключении вкладки — запускаем рефреш. */
+  /** При переключении вкладки - запускаем рефреш. */
   private onLeafChange = (): void => {
     if (!this.ctx.plugin.settings.enablePluginRefresh) return;
     const activeFile = this.ctx.app.workspace.getActiveFile();
@@ -239,6 +344,9 @@ export class TasksDashboardModule {
     this.unsubscribeIndex = null;
     this.registry.clear();
     this.rowsCache = null;
+    this.endStatusPick(null, false);
+    this.refreshDeferredByPicking = false;
+    this.deferredRefreshForce = false;
   }
 
   /** Публичный вызов для отложенного рефреша. Обновляются все открытые блоки, в т.ч. на фоновых вкладках. */
@@ -270,7 +378,7 @@ export class TasksDashboardModule {
       if (f.path.startsWith(templatesPrefix) || f.path === trash || f.path.startsWith(archivePrefix))
         return false;
       const cache = app.metadataCache.getFileCache(f);
-      return this.isTaskNote(f, cache);
+      return isTaskNote(f, cache);
     });
 
     const todayStart = new Date();
@@ -286,9 +394,9 @@ export class TasksDashboardModule {
       else status = String(status);
 
       const taskName = file.basename.replace(/\s+/g, " ").trim().toLowerCase();
-      let eventDates = taskIndex.getDatesForTask(taskName);
+      let eventDates = taskIndex.getDatesForTask(taskName, file.path);
       if (!eventDates.length && fm.date != null) {
-        const d = parseDateFromFrontmatter(fm.date);
+        const d = parseCalendarDate(fm.date);
         if (d) eventDates = [d];
       }
       const startDate = eventDates.length ? new Date(Math.min(...eventDates.map((d) => d.getTime()))) : null;
@@ -296,8 +404,8 @@ export class TasksDashboardModule {
       const executionTime = getExecutionTime(startDate, endDate);
 
       const deadlineRaw = fm.deadline;
-      const deadlineDate = parseDateFromFrontmatter(deadlineRaw);
-      const deadline = deadlineDate ? formatDate(deadlineDate) : "";
+      const deadlineDate = parseCalendarDate(deadlineRaw);
+      const deadline = deadlineDate ? formatDateDDMMYYYY(deadlineDate) : "";
       const statusLower = String(status).toLowerCase();
       const isDeadlineOverdue =
         deadlineDate != null &&
@@ -341,9 +449,10 @@ export class TasksDashboardModule {
     return rawData;
   }
 
-  /** Количество задач по проекту (ключ — название проекта в нижнем регистре). Для сортировки списка проектов по популярности. */
+  /** Количество задач по проекту (ключ - название проекта в нижнем регистре). Для сортировки списка проектов по популярности. */
   async getTaskCountByProject(): Promise<Map<string, number>> {
-    const rows = await this.getRawTaskRows();
+    // Внутри цикла обновления строки уже собраны в beforeRefresh - второй обход хранилища не нужен
+    const rows = this.rowsCache ?? (await this.getRawTaskRows());
     const counts = new Map<string, number>();
     for (const row of rows) {
       for (const p of row.projects) {
@@ -423,16 +532,83 @@ export class TasksDashboardModule {
     const displayed = new Set<string>();
     for (const conf of STATUS_CONFIG) {
       if (counts[conf.key] && !displayed.has(conf.icon)) {
-        const span = container.createEl("span", { cls: "pv-summary-item", text: `${conf.icon} ${counts[conf.key]}` });
+        container.createEl("span", { cls: "pv-summary-item", text: `${conf.icon} ${counts[conf.key]}` });
         displayed.add(conf.icon);
       }
+    }
+  }
+
+  /**
+   * Смена статуса из таблицы: комментарий (если включён), запись frontmatter, строка в «Описание задачи»,
+   * события геймификации. При отмене или ошибке <select> возвращается к прежнему значению.
+   * true - новый статус записан.
+   */
+  private async changeTaskStatus(
+    task: TaskRow,
+    previousValue: string,
+    newStatus: string,
+    selectEl: HTMLSelectElement,
+    applyStatusPill: () => void
+  ): Promise<boolean> {
+    const oldStatus = task.status;
+    const displayOld = oldStatus || "-";
+    const displayNew = newStatus || "-";
+    const revert = (): void => {
+      selectEl.value = previousValue;
+      applyStatusPill();
+    };
+    const withComment = this.ctx.plugin.settings.enableStatusChangeComment;
+    let frontmatterWritten = false;
+    try {
+      let comment = "";
+      if (withComment) {
+        // Пока открыто окно комментария, список показывает прежний статус
+        revert();
+        const answer = await this.openStatusChangeCommentModal(displayOld, displayNew);
+        if (answer === null) return false;
+        comment = answer.trim();
+        selectEl.value = newStatus;
+      }
+      if (newStatus === "") await removeFrontmatterKey(this.ctx.app, task.path, "status");
+      else await updateFrontmatter(this.ctx.app, task.path, "status", newStatus);
+      frontmatterWritten = true;
+      applyStatusPill();
+      if (withComment) {
+        // Статус уже записан: неудача со строкой комментария его не отменяет и не мешает событиям ниже
+        const dateStr = formatDateDDMMYYYY(new Date());
+        const lineText = comment
+          ? `${dateStr}: ${comment} (${displayOld} → ${displayNew})`
+          : `${dateStr}: ${displayOld} → ${displayNew}`;
+        try {
+          await appendLineToTaskDescriptionSection(this.ctx.app, task.path, lineText);
+        } catch (error) {
+          console.error("[OPA] status comment failed:", error);
+          new Notice(UI_LABELS.tasks.statusCommentFailed);
+        }
+      }
+      const wasCompleted = getConfig(oldStatus)?.key === "готово";
+      const isCompleted = getConfig(newStatus)?.key === "готово";
+      if (isCompleted && !wasCompleted) {
+        await this.ctx.eventBus.emit("task:completed", { path: task.path, difficulty: task.difficulty ?? null });
+      } else if (wasCompleted && !isCompleted) {
+        await this.ctx.eventBus.emit("task:uncompleted", { path: task.path });
+      }
+      return true;
+    } catch (error) {
+      console.error("[OPA] status change failed:", error);
+      new Notice(frontmatterWritten ? UI_LABELS.tasks.statusChangePostFailed : UI_LABELS.tasks.statusChangeFailed);
+      if (!frontmatterWritten) revert();
+      return frontmatterWritten;
+    } finally {
+      setTimeout(() => this.refreshAfterOwnChange(), 250);
     }
   }
 
   private async render(
     container: HTMLElement,
     projectFilter: string | null,
-    excludePath: string | null = null
+    excludePath: string | null = null,
+    force = true
   ): Promise<void> {
     if (!this.ctx.plugin.settings.enableTasksDashboard) {
       container.empty();
@@ -448,10 +624,35 @@ export class TasksDashboardModule {
       const groupedData = await this.getTableData(projectFilter, excludePath);
       if (homeRenderVersion.get(container) !== version) return;
 
+      // Подпись данных таблицы: фоновое обновление с теми же данными не пересобирает DOM
+      // (иначе на каждую смену вкладки/правку любого файла таблица мигала и терялось выделение).
+      const signature = renderSignature(
+        projectFilter,
+        excludePath,
+        this.ctx.plugin.settings.enableDeadline,
+        Array.from(groupedData.entries()).map(([group, tasks]) => [
+          group,
+          tasks.map((t) => [
+            t.path, t.name, t.status, t.context, t.environment, t.executionTime,
+            t.deadline, t.isDeadlineOverdue, t.difficulty, t.project, t.projects, t.group,
+          ]),
+        ])
+      );
+      if (!force && isRenderUnchanged(container, signature)) return;
+
+      this.ensureInteractionListeners(container);
+      // Пересобираем блок, в котором шёл выбор статуса (принудительный путь): отсрочка снята этой отрисовкой.
+      if (this.pickingSelect && container.contains(this.pickingSelect)) {
+        this.endStatusPick(this.pickingSelect, false);
+        this.refreshDeferredByPicking = false;
+        this.deferredRefreshForce = false;
+      }
+      const focusedPath = this.focusedStatusPath(container);
+
       container.empty();
       const body =
         projectFilter == null
-          ? createCollapsibleSection(container, "Доска задач", "tasks-dashboard-home")
+          ? createCollapsibleSection(container, UI_LABELS.blockTitles.tasksDashboard, "tasks-dashboard-home")
           : container;
 
       const labels = UI_LABELS.tasks;
@@ -554,8 +755,9 @@ export class TasksDashboardModule {
 
           const opts = getDropdownOptions();
           const select = tr.createEl("td", { cls: "pv-task-cell" }).createEl("select", {
-            cls: "pv-status-select ui-select",
+            cls: `${STATUS_SELECT_CLASS} ui-select`,
           });
+          select.dataset.opaPath = task.path;
           for (const opt of opts) {
             select.createEl("option", { value: opt.value, text: opt.label });
           }
@@ -571,41 +773,20 @@ export class TasksDashboardModule {
               select.value = normalizedStatus;
             }
           }
+          // Цвет «пилюли» статуса задаёт CSS по data-status (ключ из STATUS_CONFIG)
+          const applyStatusPill = (): void => {
+            select.dataset.status = getConfig(select.value)?.key ?? "";
+          };
+          applyStatusPill();
+          // Выбранное значение - к нему список возвращается на время окна комментария и при ошибке записи
+          let currentValue = select.value;
           select.addEventListener("click", (e) => e.stopPropagation());
-          select.addEventListener("change", async (e) => {
+          select.addEventListener("change", (e) => {
             const selectEl = e.target as HTMLSelectElement;
             const newStatus = selectEl.value;
-            const oldStatus = task.status;
-            const displayOld = oldStatus || "-";
-            const displayNew = newStatus || "-";
-
-            if (this.ctx.plugin.settings.enableStatusChangeComment) {
-              selectEl.value = oldStatus;
-              const comment = await this.openStatusChangeCommentModal(displayOld, displayNew);
-              if (comment === null) return;
-              if (newStatus === "") {
-                await removeFrontmatterKey(this.ctx.app, task.path, "status");
-              } else {
-                await updateFrontmatter(this.ctx.app, task.path, "status", newStatus);
-              }
-              const dateStr = formatDate(new Date());
-              const lineText = comment.trim()
-                ? `${dateStr}: ${comment.trim()} (${displayOld} → ${displayNew})`
-                : `${dateStr}: ${displayOld} → ${displayNew}`;
-              await appendLineToTaskDescriptionSection(this.ctx.app, task.path, lineText);
-            } else {
-              if (newStatus === "") {
-                await removeFrontmatterKey(this.ctx.app, task.path, "status");
-              } else {
-                await updateFrontmatter(this.ctx.app, task.path, "status", newStatus);
-              }
-            }
-            if (newStatus === "Готово") {
-              this.ctx.eventBus.emit("task:completed", { path: task.path, difficulty: task.difficulty ?? null });
-            } else if ((oldStatus || "").toLowerCase() === "готово" && newStatus !== "Готово") {
-              this.ctx.eventBus.emit("task:uncompleted", { path: task.path });
-            }
-            setTimeout(() => this.ctx.plugin.tasksDashboard?.scheduleRefresh(), 250);
+            void this.changeTaskStatus(task, currentValue, newStatus, selectEl, applyStatusPill).then((applied) => {
+              if (applied) currentValue = newStatus;
+            });
           });
           if (enableDeadline) {
             const deadlineCls =
@@ -636,6 +817,8 @@ export class TasksDashboardModule {
         }
       }
       }
+      markRendered(container, signature);
+      this.restoreStatusFocus(container, focusedPath);
 
     } catch (e) {
       container.empty();
@@ -649,7 +832,7 @@ class StatusChangeCommentModal extends Modal {
   private answered = false;
 
   constructor(
-    app: import("obsidian").App,
+    app: App,
     private oldStatus: string,
     private newStatus: string,
     private onDone: (value: string | null) => void

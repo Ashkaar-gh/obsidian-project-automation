@@ -1,6 +1,22 @@
-import type { App } from "obsidian";
-import { Modal, Setting, Notice, TFile, parseYaml, stringifyYaml } from "obsidian";
-import type { ModuleContext } from "./types";
+/**
+ * Создание заметок по шаблонам: команды «Создать задачу», «Создать задачу из текущей строки», «Создать проект»,
+ * «Открыть или создать ежедневную заметку», «Запись о задаче»; блок opa-daily-nav.
+ * Формы - в ui/CreateTaskModals, чистая логика правок ежедневной - в core/DailyNoteEdit,
+ * разбор шаблона - в core/TaskTemplateContent.
+ */
+
+import {
+  Notice,
+  TFile,
+  parseYaml,
+  stringifyYaml,
+  MarkdownView,
+  type App,
+  type Editor,
+  type EventRef,
+  type MarkdownFileInfo,
+} from "obsidian";
+import type { ModuleContext, PluginModule } from "./types";
 import { Paths } from "../core/Paths";
 import {
   DEFAULT_PROJECT,
@@ -9,46 +25,50 @@ import {
   DEFAULT_TASK_TEMPLATE_EXAMPLE,
   DEFAULT_TASK_TEMPLATE_EXAMPLE_FILENAME,
 } from "../core/DefaultTemplates";
-import { readDataFile, writeDataFile } from "../core/GamificationState";
-import { formatReminderDateTag } from "../core/ReminderDataUtils";
-import { getDropdownOptions } from "../core/StatusConfig";
-import { UI_LABELS } from "../ui/Labels";
+import { updateDataFile } from "../core/GamificationState";
+import { formatDateDDMMYYYY, parseDDMMYYYY } from "../core/DateUtils";
+import {
+  appendHeadingBlockToDaily,
+  buildDailyHeadingBlock,
+  dailyTaskHeading,
+  newDailyNoteCursor,
+  replaceLineWithHeadingBlock,
+  sectionCursorPosition,
+  taskNameFromEditorLine,
+} from "../core/DailyNoteEdit";
+import { isTaskNote, isTemplateFile } from "../core/TaskNote";
+import { openOrRevealFile } from "../core/WorkspaceUtils";
+import {
+  parseTaskContentTargetFromTemplate,
+  removeLinesWithUnfilledPlaceholders,
+  replacePlaceholders,
+  splitFrontmatterAndBody,
+  splitTemplateBodyByTarget,
+} from "../core/TaskTemplateContent";
+import { buildReminderLine } from "../core/ReminderDataUtils";
+import {
+  CreateProjectModal,
+  CreateTaskModal,
+  type CreateTaskFormResult,
+  type ExistingTaskMeta,
+  type TaskTemplateOption,
+} from "../ui/CreateTaskModals";
+import { DatePickerModal } from "../ui/DatePickerModal";
+
+export type { CreateTaskFormResult, ExistingTaskMeta, TaskTemplateOption } from "../ui/CreateTaskModals";
 
 /**
- * Создание заметок по шаблонам: команды «Создать заметку», «Создать задачу», «Создать проект»,
- * ежедневная заметка, заметка из файла в templates/; блок opa-daily-nav.
+ * Строка ежедневной заметки, из которой создаётся задача: после создания она заменяется заголовком
+ * `### [[Задача]]` на месте (а не дописывается в конец заметки).
  */
-
-type NoteType = "task" | "project" | "daily" | "from-template";
-type TaskContentTarget = "task" | "daily" | "both";
-type SplitTemplateContent = { taskBody: string; dailyBody: string };
-
-export interface TaskTemplateOption {
-  key: string;
-  label: string;
-  /** Проект по умолчанию для этого шаблона (из opa_project во frontmatter). */
-  defaultProject?: string;
-  /** Группа по умолчанию для этого шаблона (из opa_group во frontmatter). */
-  defaultGroup?: string;
-}
-
-/** Описание поля в модалке «Создать задачу» из frontmatter шаблона (opa_prompts). */
-export interface OpaPrompt {
-  key: string;
-  label: string;
-  optional?: boolean;
-  type?: "text" | "suggester";
-  options?: Array<{ id: string; label?: string; values: Record<string, string> }>;
-}
-
-export interface ExistingTaskMeta {
-  projects: string[];
-  contexts: string[];
-  environments: string[];
-  difficulties: string[];
-  taskTemplates: TaskTemplateOption[];
-  /** Динамические поля по шаблону: templateKey -> opa_prompts из frontmatter. */
-  templatePrompts?: Map<string, OpaPrompt[]>;
+export interface DailySourceLine {
+  /** Путь к ежедневной заметке. */
+  path: string;
+  /** Дата заметки DD-MM-YYYY (из имени файла). */
+  date: string;
+  /** Индекс строки и её текст на момент открытия формы. */
+  line: number;
+  lineText: string;
 }
 
 function getExistingTaskMeta(app: App): Omit<ExistingTaskMeta, "projects" | "taskTemplates"> {
@@ -66,7 +86,7 @@ function getExistingTaskMeta(app: App): Omit<ExistingTaskMeta, "projects" | "tas
       difficulties.add(String(fm.difficulty).trim());
   }
   return {
-    contexts: [...contexts].sort().filter((c) => c.toLowerCase() !== "росбанк"),
+    contexts: [...contexts].sort(),
     environments: [...environments].sort(),
     difficulties: [...difficulties].sort(),
   };
@@ -117,243 +137,13 @@ async function getTaskTemplatesList(app: App): Promise<TaskTemplateOption[]> {
   return list;
 }
 
-function parseOpaPrompt(raw: unknown): OpaPrompt | null {
-  if (!raw || typeof raw !== "object") return null;
-  const o = raw as Record<string, unknown>;
-  const key = typeof o.key === "string" ? o.key.trim() : "";
-  const label = typeof o.label === "string" ? o.label.trim() : key;
-  if (!key) return null;
-  const prompt: OpaPrompt = { key, label };
-  if (o.optional === true) prompt.optional = true;
-  const type = o.type;
-  if (type === "suggester" || type === "text") prompt.type = type;
-  else prompt.type = "text";
-  if (prompt.type === "suggester" && Array.isArray(o.options)) {
-    prompt.options = [];
-    for (const opt of o.options) {
-      if (!opt || typeof opt !== "object") continue;
-      const optObj = opt as Record<string, unknown>;
-      const id = String(optObj.id ?? "");
-      let values = optObj.values;
-      if (typeof values === "string") {
-        try {
-          values = JSON.parse(values) as Record<string, unknown>;
-        } catch {
-          values = null;
-        }
-      }
-      if (!id) continue;
-      const valuesRecord: Record<string, string> = {};
-      if (values && typeof values === "object" && !Array.isArray(values)) {
-        for (const [k, v] of Object.entries(values)) {
-          if (v != null) valuesRecord[k] = String(v);
-        }
-      }
-      prompt.options.push({
-        id,
-        label: typeof optObj.label === "string" ? optObj.label : undefined,
-        values: valuesRecord,
-      });
-    }
-  }
-  return prompt;
+/** Блок frontmatter из объекта: без ключей - пустой блок `---\n---`, а не `{}`. */
+function serializeFrontmatter(values: Record<string, unknown>): string {
+  const yaml = Object.keys(values).length ? stringifyYaml(values).trimEnd() : "";
+  return yaml ? `---\n${yaml}\n---` : "---\n---";
 }
 
-const STANDARD_PLACEHOLDERS = new Set([
-  "project",
-  "context",
-  "environment",
-  "date",
-  "difficulty",
-  "group",
-  "projectName",
-  "daily_nav",
-]);
-
-/** Подпись по умолчанию, если в шаблоне нет opa_labels. */
-function defaultPlaceholderLabel(key: string): string {
-  return key.replace(/_/g, " ");
-}
-
-/** Парсит opa_labels из сырого текста frontmatter (между ---). Не зависит от кэша Obsidian. */
-function parseOpaLabelsFromContent(content: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  const fm = fmMatch ? fmMatch[1] : "";
-  const opaLabelsIdx = fm.search(/^opa_labels\s*:/m);
-  if (opaLabelsIdx < 0) return out;
-  const after = fm.slice(opaLabelsIdx);
-  const lines = after.split(/\r?\n/);
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!/^\s{2,}/.test(line) && line.trim() !== "") break;
-    if (line.trim() === "") continue;
-    const colon = line.indexOf(":");
-    if (colon < 0) continue;
-    const k = line.slice(0, colon).trim();
-    let v = line.slice(colon + 1).trim();
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-      v = v.slice(1, -1);
-    }
-    if (k) out[k] = v;
-  }
-  return out;
-}
-
-/** Подпись для плейсхолдера: из текста шаблона (opa_labels в frontmatter) или из кэша, иначе по умолчанию. */
-function getPlaceholderLabel(
-  key: string,
-  templateContent: string,
-  fm: Record<string, unknown> | undefined
-): string {
-  const fromContent = parseOpaLabelsFromContent(templateContent)[key];
-  if (fromContent) return fromContent;
-  let opaLabels = fm?.opa_labels;
-  if (typeof opaLabels === "string") {
-    try {
-      opaLabels = JSON.parse(opaLabels) as Record<string, unknown>;
-    } catch {
-      opaLabels = null;
-    }
-  }
-  if (opaLabels && typeof opaLabels === "object" && !Array.isArray(opaLabels)) {
-    const v = (opaLabels as Record<string, unknown>)[key];
-    if (typeof v === "string" && v.trim()) return v.trim();
-  }
-  return defaultPlaceholderLabel(key);
-}
-
-/** Извлекает из текста шаблона уникальные плейсхолдеры %%key%% (кроме стандартных). */
-function extractPlaceholdersFromContent(content: string): string[] {
-  const set = new Set<string>();
-  const re = /%%([^%]+)%%/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(content)) !== null) {
-    const key = m[1].trim();
-    if (key.toLowerCase().startsWith("opa:")) continue;
-    if (key && !STANDARD_PLACEHOLDERS.has(key)) set.add(key);
-  }
-  return [...set].sort();
-}
-
-/** Загружает поля: opa_prompts из frontmatter + плейсхолдеры из текста. Frontmatter только из файла (parseYaml), кэш не используется. */
-async function getTaskTemplatePrompts(
-  app: App,
-  templateKeys: string[]
-): Promise<Map<string, OpaPrompt[]>> {
-  const map = new Map<string, OpaPrompt[]>();
-  const prefix = Paths.TASK_TEMPLATES_FOLDER + "/";
-  for (const templateKey of templateKeys) {
-    if (templateKey === "task") {
-      map.set(templateKey, []);
-      continue;
-    }
-    const path = `${prefix}${templateKey}.md`;
-    const file = app.vault.getAbstractFileByPath(path);
-    if (!file || !(file instanceof TFile)) {
-      map.set(templateKey, []);
-      continue;
-    }
-    let list: OpaPrompt[] = [];
-    try {
-      const content = await app.vault.read(file);
-      const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-      let fm: Record<string, unknown> = {};
-      if (fmMatch) {
-        try {
-          const parsedFm = parseYaml(fmMatch[1]);
-          if (parsedFm && typeof parsedFm === "object") {
-            fm = parsedFm as Record<string, unknown>;
-          }
-        } catch {}
-      }
-      let rawList = fm?.opa_prompts;
-      if (typeof rawList === "string") {
-        try {
-          rawList = JSON.parse(rawList) as unknown;
-        } catch {
-          rawList = null;
-        }
-      }
-      if (!Array.isArray(rawList) && fmMatch) {
-        const blockMatch = fmMatch[1].match(/\nopa_prompts:\s*\n([\s\S]*?)(?=\n\S|\n---|$)/);
-        if (blockMatch) {
-          try {
-            const wrapped = "prompts:\n" + blockMatch[1].trimEnd();
-            const parsed = parseYaml(wrapped) as { prompts?: unknown[] };
-            if (Array.isArray(parsed?.prompts)) rawList = parsed.prompts;
-          } catch {}
-        }
-      }
-      const fromPrompts = new Map<string, OpaPrompt>();
-      if (Array.isArray(rawList)) {
-        for (const raw of rawList) {
-          const p = parseOpaPrompt(raw);
-          if (p) fromPrompts.set(p.key, p);
-        }
-      }
-      const keys = extractPlaceholdersFromContent(content);
-      for (const k of keys) {
-        const fromOpa = fromPrompts.get(k);
-        if (fromOpa) {
-          list.push(fromOpa);
-        } else {
-          list.push({
-            key: k,
-            label: getPlaceholderLabel(k, content, fm),
-            type: "text",
-          });
-        }
-      }
-      for (const p of fromPrompts.values()) {
-        if (!keys.includes(p.key)) list.push(p);
-      }
-      const listKeys = new Set(list.map((x) => x.key));
-      for (const p of list) {
-        if (p.type === "suggester" && p.options) {
-          for (const opt of p.options) {
-            if (opt.values) {
-              for (const k of Object.keys(opt.values)) {
-                if (!listKeys.has(k)) {
-                  listKeys.add(k);
-                  list.push({
-                    key: k,
-                    label: getPlaceholderLabel(k, content, fm),
-                    type: "text",
-                  });
-                }
-              }
-            }
-          }
-        }
-      }
-      list.sort((a, b) => a.key.localeCompare(b.key));
-    } catch {}
-    map.set(templateKey, list);
-  }
-  return map;
-}
-
-const DIFFICULTY_OPTIONS = ["Легко", "Средне", "Сложно"];
-const DEFAULT_ENVIRONMENT_OPTIONS = ["prod", "dev"];
-
-function parseCommaSeparatedOptions(value: string | undefined): string[] {
-  if (!value || !String(value).trim()) return [];
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-/** Удаляет строки, в которых остались неподставленные плейсхолдеры %%...%%. */
-function removeLinesWithUnfilledPlaceholders(content: string): string {
-  return content
-    .split("\n")
-    .filter((line) => !/%%[^%]+%%/.test(line))
-    .join("\n");
-}
-
-/** Удаляет из frontmatter контента поля opa_labels, opa_prompts, opa_project и opa_group (они только для шаблона). */
+/** Удаляет из frontmatter контента поля opa_* (они описывают шаблон, а не задачу). */
 function stripOpaFrontmatterFromContent(content: string): string {
   const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!fmMatch) return content;
@@ -368,78 +158,79 @@ function stripOpaFrontmatterFromContent(content: string): string {
       opa_content_target: _contentTarget,
       ...rest
     } = fm;
-    const newFm = stringifyYaml(rest).trimEnd();
-    return content.replace(fmMatch[0], "---\n" + newFm + "\n---");
+    // Замена функцией: в значениях YAML могут быть «$&», «$1» и т.п., которые строка-замена интерпретировала бы
+    return content.replace(fmMatch[0], () => serializeFrontmatter(rest));
   } catch {
     return content;
   }
 }
 
-function splitFrontmatterAndBody(content: string): { frontmatter: string; body: string } {
-  const fmMatch = content.match(/^(---\r?\n[\s\S]*?\r?\n---)(\r?\n?[\s\S]*)$/);
-  if (!fmMatch) return { frontmatter: "", body: content };
-  return { frontmatter: fmMatch[1], body: fmMatch[2].replace(/^\r?\n/, "") };
-}
+type PlaceholderValue = string | string[];
 
-function stripTaskViewBlocks(content: string): string {
-  const withoutTaskView = content.replace(/\n?```opa-task-view\s*\n```[\t ]*\n?/g, "\n");
-  return withoutTaskView.replace(/\n{3,}/g, "\n\n").trim();
-}
+/** Подставляет значения через YAML parser/stringifier, не интерпретируя ввод как YAML. */
+function replaceFrontmatterPlaceholders(
+  frontmatter: string,
+  values: Record<string, PlaceholderValue>
+): string {
+  if (!frontmatter) return "";
+  const fmMatch = frontmatter.match(/^---\r?\n([\s\S]*?)\r?\n---$/);
+  if (!fmMatch) return frontmatter;
 
-function splitTemplateBodyByTarget(
-  body: string,
-  defaultTarget: TaskContentTarget
-): SplitTemplateContent {
-  const lines = body.split("\n");
-  let currentTarget: TaskContentTarget = defaultTarget;
-  const taskLines: string[] = [];
-  const dailyLines: string[] = [];
+  const parseableYaml = fmMatch[1]
+    .replace(/^(\s*[^#\r\n][^:\r\n]*:\s*)%%([^%]+)%%(\s*(?:#.*)?)$/gm, '$1"%%$2%%"$3')
+    .replace(/^(\s*-\s*)%%([^%]+)%%(\s*(?:#.*)?)$/gm, '$1"%%$2%%"$3');
+  const parsed = parseYaml(parseableYaml);
+  if (!parsed || typeof parsed !== "object") return frontmatter;
 
-  const legacyTargetByMarker: Record<string, TaskContentTarget | "default"> = {
-    "%%opa:task%%": "task",
-    "%%opa:daily%%": "daily",
-    "%%opa:both%%": "both",
-    "%%opa:default%%": "default",
-  };
-
-  const parseMarker = (line: string): TaskContentTarget | "default" | null => {
-    const normalized = line.trim().toLowerCase();
-    if (legacyTargetByMarker[normalized]) return legacyTargetByMarker[normalized];
-    const htmlMarker = normalized.match(/^<!--\s*opa:(task|daily|both|default)\s*-->$/);
-    if (!htmlMarker) return null;
-    const mode = htmlMarker[1];
-    if (mode === "task" || mode === "daily" || mode === "both" || mode === "default") return mode;
-    return null;
-  };
-
-  for (const line of lines) {
-    const markerTarget = parseMarker(line);
-    if (markerTarget) {
-      currentTarget = markerTarget === "default" ? defaultTarget : markerTarget;
-      continue;
+  const resolve = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      const exactMatch = value.match(/^%%([^%]+)%%$/);
+      if (exactMatch) {
+        const key = exactMatch[1].trim();
+        if (Object.prototype.hasOwnProperty.call(values, key)) return values[key];
+      }
+      return value.replace(/%%([^%]+)%%/g, (placeholder, rawKey: string) => {
+        const key = rawKey.trim();
+        if (!Object.prototype.hasOwnProperty.call(values, key)) return placeholder;
+        const replacement = values[key];
+        return Array.isArray(replacement) ? replacement.join(", ") : replacement;
+      });
     }
-
-    if (currentTarget === "task" || currentTarget === "both") taskLines.push(line);
-    if (currentTarget === "daily" || currentTarget === "both") dailyLines.push(line);
-  }
-
-  const normalize = (value: string): string => value.replace(/\n{3,}/g, "\n\n").trim();
-  return {
-    taskBody: normalize(taskLines.join("\n")),
-    dailyBody: normalize(dailyLines.join("\n")),
+    if (Array.isArray(value)) return value.map(resolve);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, resolve(item)])
+      );
+    }
+    return value;
   };
+
+  return serializeFrontmatter(resolve(parsed) as Record<string, unknown>);
 }
 
-function parseTaskContentTargetFromTemplate(content: string): TaskContentTarget {
-  const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!fmMatch) return "task";
-  try {
-    const fm = parseYaml(fmMatch[1]) as Record<string, unknown> | null;
-    const raw = fm?.opa_content_target;
-    const value = raw != null ? String(raw).trim().toLowerCase() : "";
-    if (value === "task" || value === "daily" || value === "both") return value;
-  } catch {}
-  return "task";
+function parseFrontmatterObject(frontmatter: string): Record<string, unknown> {
+  const fmMatch = frontmatter.match(/^---\r?\n([\s\S]*?)\r?\n---$/);
+  if (!fmMatch) return {};
+  const parsedYaml = parseYaml(fmMatch[1]);
+  return parsedYaml && typeof parsedYaml === "object" && !Array.isArray(parsedYaml)
+    ? { ...(parsedYaml as Record<string, unknown>) }
+    : {};
+}
+
+/** Записать ключ во frontmatter (создаёт блок, если его нет). */
+function setFrontmatterValue(frontmatter: string, key: string, value: unknown): string {
+  const parsed = parseFrontmatterObject(frontmatter);
+  parsed[key] = value;
+  return serializeFrontmatter(parsed);
+}
+
+/** Убрать ключ из frontmatter (без блока или без ключа - как было). */
+function deleteFrontmatterKey(frontmatter: string, key: string): string {
+  if (!frontmatter) return frontmatter;
+  const parsed = parseFrontmatterObject(frontmatter);
+  if (!(key in parsed)) return frontmatter;
+  delete parsed[key];
+  return serializeFrontmatter(parsed);
 }
 
 /** Удаляет блоки Templater (<%* ... %>, <% ... %> и т.д.), чтобы они не попадали в заметку как текст. */
@@ -447,131 +238,15 @@ function stripTemplaterBlocks(content: string): string {
   return content.replace(/<%\*?[\s\S]*?%>/g, "").trim();
 }
 
-/** Всплывающее окно мультивыбора: чекбоксы в списке, OK/Cancel. */
-class MultiSelectModal extends Modal {
-  constructor(
-    app: App,
-    private readonly titleText: string,
-    private readonly options: string[],
-    private readonly initialValue: string,
-    private readonly onConfirm: (value: string) => void
-  ) {
-    super(app);
-    this.setTitle(titleText);
-  }
-
-  onOpen(): void {
-    this.modalEl.addClass("opa-multi-select-popover");
-    const selected = new Set(
-      this.initialValue
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-    );
-    const filterWrap = this.contentEl.createDiv({ cls: "opa-multi-select-filter" });
-    const filterInput = filterWrap.createEl("input", {
-      type: "text",
-      attr: { placeholder: "Введите буквы для поиска…" },
-    });
-    const wrap = this.contentEl.createDiv({ cls: "opa-multi-select" });
-    const labelEls: HTMLElement[] = [];
-    for (const opt of this.options) {
-      const label = wrap.createEl("label", { cls: "opa-multi-select-label" });
-      const cb = label.createEl("input", { type: "checkbox", attr: { "data-value": opt } });
-      cb.checked = selected.has(opt);
-      if (selected.has(opt)) label.addClass("opa-multi-select-label-checked");
-      cb.onchange = () => label.classList.toggle("opa-multi-select-label-checked", cb.checked);
-      label.appendText(opt);
-      labelEls.push(label);
-    }
-    const applyFilter = (q: string) => {
-      const lower = q.trim().toLowerCase();
-      labelEls.forEach((el) => {
-        const value = (el.querySelector("input")?.dataset.value ?? "").toLowerCase();
-        el.classList.toggle("opa-filter-hidden", !!lower && !value.includes(lower));
-      });
-    };
-    filterInput.addEventListener("input", () => applyFilter(filterInput.value));
-    const visibleLabels = () => labelEls.filter((el) => !el.classList.contains("opa-filter-hidden"));
-    const focusLabel = (idx: number) => {
-      const vis = visibleLabels();
-      if (vis.length === 0) return;
-      const i = Math.max(0, Math.min(idx, vis.length - 1));
-      (vis[i].querySelector("input") as HTMLInputElement)?.focus();
-    };
-    this.modalEl.addEventListener("keydown", (evt) => {
-      if (evt.key === "Enter") {
-        evt.preventDefault();
-        okBtn.click();
-        return;
-      }
-      if (evt.key === "ArrowDown" || evt.key === "ArrowUp") {
-        const vis = visibleLabels();
-        if (vis.length === 0) return;
-        const active = document.activeElement;
-        let idx = vis.findIndex((el) => el.contains(active));
-        if (idx < 0) idx = 0;
-        else idx = evt.key === "ArrowDown" ? Math.min(idx + 1, vis.length - 1) : Math.max(idx - 1, 0);
-        evt.preventDefault();
-        focusLabel(idx);
-      }
-    });
-    const btnRow = this.contentEl.createDiv({ cls: "opa-multi-select-buttons" });
-    btnRow.createEl("button", { text: "Отмена" }).onclick = () => this.close();
-    const okBtn = btnRow.createEl("button", { cls: "mod-cta", text: "OK" });
-    okBtn.onclick = () => {
-      const checked = wrap.querySelectorAll<HTMLInputElement>("input:checked");
-      const value = [...checked].map((el) => el.dataset.value ?? "").filter(Boolean).join(", ");
-      this.onConfirm(value);
-      this.close();
-    };
-  }
-}
-
-function formatMultiSelectSummary(value: string): string {
-  return value.trim();
-}
-
-function parseDayMonthYear(s: string): { day: number; month: number; year: number } | null {
-  const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(s);
-  if (!m) return null;
-  const day = parseInt(m[1], 10);
-  const month = parseInt(m[2], 10) - 1;
-  const year = parseInt(m[3], 10);
-  if (month < 0 || month > 11 || day < 1 || day > 31) return null;
-  return { day, month, year };
-}
-
-function formatDDMMYYYY(d: Date): string {
-  const day = String(d.getDate()).padStart(2, "0");
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const year = d.getFullYear();
-  return `${day}-${month}-${year}`;
-}
-
-const MONTH_NAMES_RU = [
-  "январь", "февраль", "март", "апрель", "май", "июнь",
-  "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
-];
-
-function getDaysInMonth(year: number, month0: number): number {
-  return new Date(year, month0 + 1, 0).getDate();
-}
-
-function prevNextDay(basename: string): { prev: string; next: string; folder: string } | null {
-  const parsed = parseDayMonthYear(basename);
-  if (!parsed) return null;
-  const { day, month, year } = parsed;
-  const date = new Date(year, month, day);
+/** Соседние дни для ежедневной заметки с именем DD-MM-YYYY (null - имя не дата). */
+function prevNextDay(basename: string): { prev: string; next: string } | null {
+  const date = parseDDMMYYYY(basename);
+  if (!date) return null;
   const prev = new Date(date);
   prev.setDate(prev.getDate() - 1);
   const next = new Date(date);
   next.setDate(next.getDate() + 1);
-  return {
-    prev: formatDDMMYYYY(prev),
-    next: formatDDMMYYYY(next),
-    folder: "",
-  };
+  return { prev: formatDateDDMMYYYY(prev), next: formatDateDDMMYYYY(next) };
 }
 
 /** Строка навигации для ежедневной заметки: ← [[prev]] | [[next]] → */
@@ -584,748 +259,9 @@ function buildDailyNavLine(dateStr: string): string {
   return `← [[${prevLink}|${info.prev}]]  |  [[${nextLink}|${info.next}]] →`;
 }
 
-/** Модалка только «Задача» / «Проект» — для горячей клавиши «Создать задачу или проект». */
-class CreateTaskOrProjectModal extends Modal {
-  constructor(
-    private ctx: ModuleContext,
-    private onTask: () => void,
-    private onProject: () => void
-  ) {
-    super(ctx.app);
-    this.setTitle("");
-  }
-
-  onOpen(): void {
-    this.modalEl.addClass("opa-new-note-modal");
-    this.modalEl.addClass("opa-task-or-project-modal");
-    const { contentEl } = this;
-    const btnContainer = contentEl.createDiv({ cls: "opa-new-note-buttons" });
-    const run = (fn: () => void) => {
-      this.close();
-      fn();
-    };
-    btnContainer.createEl("button", { text: "Задача", cls: "mod-secondary" }).onclick = () => run(this.onTask);
-    btnContainer.createEl("button", { text: "Проект", cls: "mod-secondary" }).onclick = () => run(this.onProject);
-  }
-}
-
-/** Выбор: создать задачу или проект (и другие типы заметок). */
-class CreateNoteModal extends Modal {
-  constructor(
-    private ctx: ModuleContext,
-    private onTask: () => void,
-    private onProject: () => void,
-    private onDaily: () => void,
-    private onFromTemplate: () => void
-  ) {
-    super(ctx.app);
-    this.setTitle("Новая заметка");
-  }
-
-  onOpen(): void {
-    this.modalEl.addClass("opa-new-note-modal");
-    const { contentEl } = this;
-    contentEl.createEl("p", { text: "Создать задачу или проект?", cls: "opa-new-note-label" });
-    const btnContainer = contentEl.createDiv({ cls: "opa-new-note-buttons" });
-    const run = (fn: () => void) => {
-      this.close();
-      fn();
-    };
-    btnContainer.createEl("button", { text: "Задача", cls: "mod-cta" }).onclick = () => run(this.onTask);
-    btnContainer.createEl("button", { text: "Проект", cls: "mod-cta" }).onclick = () => run(this.onProject);
-    contentEl.createEl("p", { text: "Другое:", cls: "opa-new-note-label opa-new-note-label-secondary" });
-    const otherContainer = contentEl.createDiv({ cls: "opa-new-note-buttons" });
-    otherContainer.createEl("button", { text: "Ежедневная", cls: "mod-secondary" }).onclick = () => run(this.onDaily);
-    otherContainer.createEl("button", { text: "По шаблону из папки templates", cls: "mod-secondary" }).onclick = () =>
-      run(this.onFromTemplate);
-  }
-}
-
-/** Заметка по выбранному файлу из templates/. */
-class ChooseTemplateModal extends Modal {
-  private templatePath = "";
-  private name = "";
-  private templatePaths: string[] = [];
-
-  constructor(
-    private ctx: ModuleContext,
-    private onDone: (templatePath: string, name: string) => void
-  ) {
-    super(ctx.app);
-    this.setTitle("Заметка по шаблону");
-  }
-
-  onOpen(): void {
-    this.modalEl.addClass("opa-create-task-modal");
-    const files = this.ctx.app.vault.getMarkdownFiles();
-    const prefix = Paths.TEMPLATES_FOLDER + "/";
-    this.templatePaths = files
-      .filter((f) => f.path.startsWith(prefix) && f.path !== prefix)
-      .map((f) => f.path)
-      .sort();
-    if (this.templatePaths.length === 0) {
-      this.contentEl.createDiv({ text: "В папке templates/ нет .md файлов." });
-      return;
-    }
-    this.templatePath = this.templatePaths[0];
-    const { contentEl } = this;
-    new Setting(contentEl)
-      .setName("Шаблон")
-      .addDropdown((d) => {
-        for (const p of this.templatePaths) {
-          const label = p.slice(prefix.length).replace(/\.md$/, "");
-          d.addOption(p, label);
-        }
-        d.setValue(this.templatePath).onChange((v) => (this.templatePath = v));
-      });
-    new Setting(contentEl).setName("Имя заметки").addText((t) =>
-      t.setPlaceholder("Название").onChange((v) => (this.name = v))
-    );
-    new Setting(contentEl).addButton((btn) =>
-      btn.setButtonText("Создать").onClick(() => {
-        if (!this.name.trim()) {
-          new Notice("Введите имя заметки.");
-          return;
-        }
-        this.onDone(this.templatePath, this.name.trim());
-        this.close();
-      })
-    );
-  }
-}
-
-/** Окно выбора даты для заголовка в ежедневной (степперы день/месяц/год, Tab/стрелки/Enter как в активностях). */
-class DailyHeadingDateModal extends Modal {
-  private value = "";
-  private keydownHandler: ((e: KeyboardEvent) => void) | null = null;
-
-  constructor(
-    app: App,
-    private readonly onDone: (value: string | null) => void,
-    title = "Дата ежедневной заметки"
-  ) {
-    super(app);
-    this.setTitle(title);
-  }
-
-  onOpen(): void {
-    this.modalEl.addClass("opa-daily-heading-date-modal");
-    const { contentEl } = this;
-    const now = new Date();
-    let selectedDay = now.getDate();
-    let selectedMonth = now.getMonth() + 1;
-    let selectedYear = now.getFullYear();
-    const yearMin = 2020;
-    const yearMax = selectedYear + 10;
-
-    const clampDay = (): void => {
-      const maxDay = getDaysInMonth(selectedYear, selectedMonth - 1);
-      if (selectedDay > maxDay) selectedDay = maxDay;
-    };
-
-    const doChangeDay = (delta: number): void => {
-      selectedDay += delta;
-      if (selectedDay < 1) {
-        selectedMonth--;
-        if (selectedMonth < 1) {
-          selectedMonth = 12;
-          selectedYear--;
-        }
-        selectedDay = getDaysInMonth(selectedYear, selectedMonth - 1);
-      } else {
-        const maxDay = getDaysInMonth(selectedYear, selectedMonth - 1);
-        if (selectedDay > maxDay) {
-          selectedDay = 1;
-          selectedMonth++;
-          if (selectedMonth > 12) {
-            selectedMonth = 1;
-            selectedYear++;
-          }
-        }
-      }
-      clampDay();
-      updateLabels();
-    };
-
-    const doChangeMonth = (delta: number): void => {
-      selectedMonth += delta;
-      if (selectedMonth > 12) {
-        selectedMonth = 1;
-        selectedYear++;
-      } else if (selectedMonth < 1) {
-        selectedMonth = 12;
-        selectedYear--;
-      }
-      const maxDay = getDaysInMonth(selectedYear, selectedMonth - 1);
-      if (selectedDay > maxDay) selectedDay = maxDay;
-      clampDay();
-      updateLabels();
-    };
-
-    const doChangeYear = (delta: number): void => {
-      selectedYear += delta;
-      if (selectedYear < yearMin) selectedYear = yearMin;
-      if (selectedYear > yearMax) selectedYear = yearMax;
-      clampDay();
-      updateLabels();
-    };
-
-    const doConfirm = (): void => {
-      clampDay();
-      const dayStr = String(selectedDay).padStart(2, "0");
-      const monthStr = String(selectedMonth).padStart(2, "0");
-      this.value = `${dayStr}-${monthStr}-${selectedYear}`;
-      this.onDone(this.value);
-      this.close();
-    };
-
-    const steppersWrap = contentEl.createDiv({ cls: "opa-daily-heading-date-steppers-wrap" });
-    const monthWrap = steppersWrap.createDiv({ cls: "gamification-completed-month-wrap opa-daily-heading-date-steppers" });
-
-    const dayGroup = monthWrap.createDiv({ cls: "gamification-month-group" });
-    const dayStepper = dayGroup.createDiv({ cls: "gamification-stepper-group" });
-    dayStepper.tabIndex = 0;
-    const dayPrev = dayStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "‹" });
-    const dayValue = dayStepper.createEl("span", { cls: "gamification-stepper-value" });
-    const dayNext = dayStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "›" });
-
-    const monthGroup = monthWrap.createDiv({ cls: "gamification-month-group" });
-    const monthStepper = monthGroup.createDiv({ cls: "gamification-stepper-group" });
-    monthStepper.tabIndex = 0;
-    const monthPrev = monthStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "‹" });
-    const monthValue = monthStepper.createEl("span", { cls: "gamification-stepper-value gamification-stepper-month" });
-    const monthNext = monthStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "›" });
-
-    const yearGroup = monthWrap.createDiv({ cls: "gamification-month-group" });
-    const yearStepper = yearGroup.createDiv({ cls: "gamification-stepper-group" });
-    yearStepper.tabIndex = 0;
-    const yearPrev = yearStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "‹" });
-    const yearValue = yearStepper.createEl("span", { cls: "gamification-stepper-value" });
-    const yearNext = yearStepper.createEl("button", { type: "button", cls: "gamification-stepper-btn", text: "›" });
-
-    const updateLabels = (): void => {
-      clampDay();
-      dayValue.setText(String(selectedDay));
-      monthValue.setText(MONTH_NAMES_RU[selectedMonth - 1] ?? "");
-      yearValue.setText(String(selectedYear));
-    };
-
-    dayPrev.addEventListener("click", () => doChangeDay(-1));
-    dayNext.addEventListener("click", () => doChangeDay(1));
-    monthPrev.addEventListener("click", () => doChangeMonth(-1));
-    monthNext.addEventListener("click", () => doChangeMonth(1));
-    yearPrev.addEventListener("click", () => doChangeYear(-1));
-    yearNext.addEventListener("click", () => doChangeYear(1));
-
-    const currentDayRow = steppersWrap.createDiv({ cls: "opa-daily-heading-current-day-row" });
-    const currentDayBtn = currentDayRow.createEl("button", {
-      type: "button",
-      cls: "gamification-stepper-current-btn",
-      text: "Текущий день",
-    });
-    currentDayBtn.addEventListener("click", () => {
-      selectedDay = now.getDate();
-      selectedMonth = now.getMonth() + 1;
-      selectedYear = now.getFullYear();
-      updateLabels();
-    });
-
-    updateLabels();
-
-    const steppers = [dayStepper, monthStepper, yearStepper];
-    this.keydownHandler = (e: KeyboardEvent) => {
-      if (e.key === "Enter" && steppers.includes(document.activeElement as typeof steppers[number])) {
-        e.preventDefault();
-        doConfirm();
-        return;
-      }
-      if (e.key === "Tab") {
-        const idx = steppers.indexOf(document.activeElement as typeof steppers[number]);
-        if (idx >= 0) {
-          e.preventDefault();
-          const next = e.shiftKey ? (idx - 1 + 3) % 3 : (idx + 1) % 3;
-          steppers[next].focus();
-        }
-        return;
-      }
-      const focusedIdx = steppers.indexOf(document.activeElement as typeof steppers[number]);
-      if (focusedIdx < 0) return;
-      const delta = e.key === "ArrowLeft" || e.key === "ArrowDown" ? -1 : e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : 0;
-      if (delta === 0) return;
-      e.preventDefault();
-      if (focusedIdx === 0) doChangeDay(delta);
-      else if (focusedIdx === 1) doChangeMonth(delta);
-      else doChangeYear(delta);
-    };
-    contentEl.addEventListener("keydown", this.keydownHandler);
-    setTimeout(() => dayStepper.focus(), 0);
-
-    const btnRow = contentEl.createDiv({ cls: "opa-daily-heading-date-buttons" });
-    const cancelBtn = btnRow.createEl("button", { text: "Отмена", cls: "mod-secondary" });
-    const okBtn = btnRow.createEl("button", { text: "OK", cls: "mod-cta" });
-
-    cancelBtn.onclick = () => {
-      this.onDone(null);
-      this.close();
-    };
-
-    okBtn.onclick = () => doConfirm();
-  }
-
-  onClose(): void {
-    if (this.keydownHandler) {
-      this.contentEl.removeEventListener("keydown", this.keydownHandler);
-      this.keydownHandler = null;
-    }
-  }
-}
-
-class CreateTaskModal extends Modal {
-  private name = "";
-  private project = "";
-  private context = "";
-  private environment = "";
-  private dateMode: "today" | "choose" = "today";
-  private dateChosen = "";
-  private difficulty = "Легко";
-  /** Статус задачи: пустая строка = без статуса. */
-  private status: string = UI_LABELS.tasks.defaultStatus;
-  private group = "";
-  private templateKey = "task";
-  private dailyHeadingMode: "today" | "choose" | "none" = "today";
-  private dailyHeadingDate = "";
-  /** Дата дедлайна (только при enableDeadline). */
-  private deadline = "";
-  /** Значения полей opa_prompts для текущего шаблона. */
-  private customPlaceholders: Record<string, string> = {};
-  /** Сохранённые значения при переключении шаблона. */
-  private customValuesByTemplate = new Map<string, Record<string, string>>();
-  private customFieldsContainer: HTMLDivElement | null = null;
-  /** Ссылка на элемент отображения выбранного проекта (для обновления при смене шаблона). */
-  private projectSummaryEl: HTMLElement | null = null;
-  /** Ссылка на поле ввода группы (для обновления при смене шаблона). */
-  private groupInputRef: { setValue(v: string): void } | null = null;
-
-  constructor(
-    private ctx: ModuleContext,
-    private onDone: (p: {
-      name: string;
-      project: string;
-      context: string;
-      environment: string;
-      date: string;
-      difficulty: string;
-      status: string;
-      group: string;
-      templateKey: string;
-      dailyHeadingMode: "today" | "choose" | "none";
-      dailyHeadingDate: string;
-      customPlaceholders: Record<string, string>;
-      deadline?: string;
-    }) => void,
-    private meta: ExistingTaskMeta
-  ) {
-    super(ctx.app);
-    this.setTitle("Создать задачу");
-  }
-
-  private renderCustomFields(): void {
-    const container = this.customFieldsContainer;
-    if (!container) return;
-    container.empty();
-    const prompts = this.meta.templatePrompts?.get(this.templateKey) ?? [];
-    for (const prompt of prompts) {
-      if (prompt.type === "suggester" && prompt.options?.length) {
-        const opts = prompt.options;
-        const first = opts[0];
-        const matched = opts.some(
-          (o) =>
-            o.values &&
-            Object.keys(o.values).every((k) => this.customPlaceholders[k] === o.values![k])
-        );
-        if (!matched && first?.values) {
-          Object.assign(this.customPlaceholders, first.values);
-        }
-      }
-    }
-    for (const prompt of prompts) {
-      if (prompt.type === "suggester" && prompt.options?.length) {
-        const setting = new Setting(container).setName(prompt.label);
-        const opts = prompt.options;
-        let currentId = opts[0]?.id ?? "";
-        for (const o of opts) {
-          if (
-            o.values &&
-            Object.keys(o.values).every((k) => this.customPlaceholders[k] === o.values[k])
-          ) {
-            currentId = o.id;
-            break;
-          }
-        }
-        setting.addDropdown((d) => {
-          for (const o of opts) {
-            d.addOption(o.id, o.label ?? o.id);
-          }
-          d.setValue(currentId).onChange((id) => {
-            const opt = opts.find((o) => o.id === id);
-            if (opt?.values) {
-              Object.assign(this.customPlaceholders, opt.values);
-              this.renderCustomFields();
-            }
-          });
-        });
-      } else {
-        const setting = new Setting(container).setName(prompt.label);
-        const val = this.customPlaceholders[prompt.key] ?? "";
-        setting.addText((t) =>
-          t.setValue(val).setPlaceholder(prompt.label || "").onChange((v) => {
-            this.customPlaceholders[prompt.key] = v;
-          })
-        );
-      }
-    }
-    const section = container.parentElement;
-    if (section) {
-      section.classList.toggle("opa-create-task-custom-section-empty", container.childNodes.length === 0);
-    }
-  }
-
-  private addMultiSelectRow(
-    contentEl: HTMLElement,
-    name: string,
-    options: string[],
-    getValue: () => string,
-    setValue: (v: string) => void,
-    onSummaryCreated?: (summaryEl: HTMLElement) => void
-  ): void {
-    const setting = new Setting(contentEl).setName(name);
-    const wrap = setting.controlEl.createDiv({ cls: "opa-multi-select-row" });
-    const summary = wrap.createSpan({ cls: "opa-multi-select-summary" });
-    summary.setText(formatMultiSelectSummary(getValue()));
-    onSummaryCreated?.(summary);
-    const btn = wrap.createEl("button", { cls: "mod-secondary", text: "Выбрать…" });
-    btn.onclick = () => {
-      const modal = new MultiSelectModal(
-        this.app,
-        name,
-        options,
-        getValue(),
-        (v) => {
-          setValue(v);
-          summary.setText(formatMultiSelectSummary(v));
-        }
-      );
-      modal.open();
-    };
-  }
-
-  onOpen(): void {
-    this.modalEl.addClass("opa-create-task-modal");
-    const initialName = (this.meta as { initialName?: string }).initialName;
-    if (initialName != null) this.name = initialName;
-    const { contentEl } = this;
-    const meta = this.meta;
-    const form = contentEl.createDiv({ cls: "opa-create-task-form" });
-    form.style.width = "100%";
-    form.style.minWidth = "450px";
-    form.style.boxSizing = "border-box";
-
-    new Setting(form)
-      .setName("Шаблон задачи")
-      .addDropdown((d) => {
-        for (const { key, label } of meta.taskTemplates) {
-          d.addOption(key, label);
-        }
-        const current =
-          meta.taskTemplates.some((t) => t.key === this.templateKey) ? this.templateKey : "task";
-        d.setValue(current).onChange((v) => {
-          if (this.customFieldsContainer) {
-            this.customValuesByTemplate.set(this.templateKey, { ...this.customPlaceholders });
-            this.templateKey = v;
-            const restored = this.customValuesByTemplate.get(v);
-            this.customPlaceholders = restored ? { ...restored } : {};
-            this.renderCustomFields();
-          } else {
-            this.templateKey = v;
-          }
-          const template = meta.taskTemplates.find((t) => t.key === v);
-          if (template?.defaultProject) {
-            const fromList = meta.projects.find(
-              (p) => p.toLowerCase() === template.defaultProject!.toLowerCase()
-            );
-            this.project = fromList ?? template.defaultProject;
-          } else {
-            this.project = "";
-          }
-          if (template?.defaultGroup) {
-            this.group = template.defaultGroup;
-          } else {
-            this.group = "";
-          }
-          if (this.projectSummaryEl) {
-            this.projectSummaryEl.setText(formatMultiSelectSummary(this.project));
-          }
-          if (this.groupInputRef) {
-            this.groupInputRef.setValue(this.group);
-          }
-        });
-      });
-    const initialTemplate = meta.taskTemplates.find((t) => t.key === this.templateKey);
-    if (initialTemplate?.defaultProject) {
-      const fromList = meta.projects.find(
-        (p) => p.toLowerCase() === initialTemplate.defaultProject!.toLowerCase()
-      );
-      this.project = fromList ?? initialTemplate.defaultProject;
-    }
-    if (initialTemplate?.defaultGroup) {
-      this.group = initialTemplate.defaultGroup;
-    }
-    new Setting(form).setName("Название задачи").addText((t) =>
-      t.setPlaceholder("Название задачи").setValue(this.name).onChange((v) => (this.name = v))
-    );
-    const contextOpts = parseCommaSeparatedOptions(this.ctx.plugin.settings.contextOptions);
-    const contextList = contextOpts.length > 0 ? contextOpts : meta.contexts;
-    const envOpts = parseCommaSeparatedOptions(this.ctx.plugin.settings.environmentOptions);
-    const environmentList = envOpts.length > 0 ? envOpts : DEFAULT_ENVIRONMENT_OPTIONS;
-
-    this.addMultiSelectRow(
-      form,
-      "Проект",
-      meta.projects,
-      () => this.project,
-      (v) => (this.project = v),
-      (summaryEl) => {
-        this.projectSummaryEl = summaryEl;
-      }
-    );
-    this.addMultiSelectRow(form, "Контекст", contextList, () => this.context, (v) => (this.context = v));
-    this.addMultiSelectRow(form, "Окружение", environmentList, () => this.environment, (v) => (this.environment = v));
-    const dateSetting = new Setting(form).setName("Дата задачи");
-    const dateWrap = dateSetting.controlEl.createDiv({ cls: "opa-multi-select-row" });
-    const dateSummary = dateWrap.createSpan({ cls: "opa-multi-select-summary" });
-    const getDateSummary = (): string => {
-      if (this.dateMode === "today") return formatDDMMYYYY(new Date());
-      return this.dateChosen || "Выбрать день";
-    };
-    dateSummary.setText(getDateSummary());
-    const dateDropdown = dateWrap.createEl("select", { cls: "dropdown" });
-    dateDropdown.createEl("option", { value: "today", text: "Сегодняшний день" });
-    dateDropdown.createEl("option", { value: "choose", text: "Выбрать день" });
-    dateDropdown.value = this.dateMode;
-    dateDropdown.addEventListener("change", () => {
-      const newMode = dateDropdown.value as "today" | "choose";
-      if (newMode === "choose") {
-        this.dateMode = "choose";
-        dateSummary.setText(getDateSummary());
-        const modal = new DailyHeadingDateModal(this.app, (value) => {
-          if (value) {
-            this.dateMode = "choose";
-            this.dateChosen = value;
-            dateDropdown.value = "choose";
-            dateSummary.setText(getDateSummary());
-          } else {
-            this.dateMode = "today";
-            this.dateChosen = "";
-            dateDropdown.value = "today";
-            dateSummary.setText(getDateSummary());
-          }
-        }, "Дата задачи");
-        modal.open();
-      } else {
-        this.dateMode = "today";
-        this.dateChosen = "";
-        dateSummary.setText(getDateSummary());
-      }
-    });
-    if (this.ctx.plugin.settings.enableGamification) {
-      new Setting(form)
-        .setName("Сложность задачи")
-        .addDropdown((d) => {
-          d.addOption("", "-");
-          for (const v of DIFFICULTY_OPTIONS) d.addOption(v, v);
-          d.setValue(this.difficulty).onChange((v) => (this.difficulty = v));
-        });
-    }
-    new Setting(form)
-      .setName("Статус задачи")
-      .addDropdown((d) => {
-        for (const { value, label } of getDropdownOptions()) {
-          d.addOption(value, label);
-        }
-        d.setValue(this.status || "").onChange((v) => (this.status = v ?? ""));
-      });
-    new Setting(form)
-      .setName("Группа задачи")
-      .addText((t) => {
-        this.groupInputRef = t;
-        t.setPlaceholder("Группа задачи")
-          .setValue(this.group)
-          .onChange((v) => (this.group = v));
-      });
-    if (this.ctx.plugin.settings.enableDeadline) {
-      const deadlineSetting = new Setting(form).setName("Дедлайн");
-      const deadlineWrap = deadlineSetting.controlEl.createDiv({ cls: "opa-multi-select-row" });
-      const deadlineSummary = deadlineWrap.createSpan({ cls: "opa-multi-select-summary" });
-      deadlineSummary.setText(this.deadline || "Не указан");
-      const setDeadlineSummary = (): void => {
-        deadlineSummary.setText(this.deadline || "Не указан");
-      };
-      const openDeadlineModal = (): void => {
-        const modal = new DailyHeadingDateModal(this.app, (value) => {
-          if (value) {
-            this.deadline = value;
-            setDeadlineSummary();
-          }
-        }, "Дедлайн");
-        modal.open();
-      };
-      const btn = deadlineWrap.createEl("button", { text: "Выбрать дату", cls: "mod-secondary" });
-      btn.addEventListener("click", openDeadlineModal);
-    }
-    const customSection = form.createDiv({ cls: "opa-create-task-custom-section" });
-    customSection.createEl("hr", { cls: "opa-create-task-custom-divider" });
-    this.customFieldsContainer = customSection.createDiv({ cls: "opa-create-task-custom-fields" });
-    this.renderCustomFields();
-    let lastMode: "today" | "choose" | "none" = this.dailyHeadingMode;
-    const headingSetting = new Setting(form).setName("Дата ежедневной заметки");
-    const headingWrap = headingSetting.controlEl.createDiv({ cls: "opa-multi-select-row" });
-    const headingSummary = headingWrap.createSpan({ cls: "opa-multi-select-summary" });
-    const formatDateForSummary = (): string => {
-      const d = new Date();
-      return `${String(d.getDate()).padStart(2, "0")}-${String(d.getMonth() + 1).padStart(2, "0")}-${d.getFullYear()}`;
-    };
-    const getHeadingSummary = (): string => {
-      if (this.dailyHeadingMode === "none") return "";
-      if (this.dailyHeadingMode === "today") return formatDateForSummary();
-      if (this.dailyHeadingMode === "choose") return this.dailyHeadingDate || "Выбрать день";
-      return "";
-    };
-    headingSummary.setText(getHeadingSummary());
-    const headingDropdown = headingWrap.createEl("select", { cls: "dropdown" });
-    headingDropdown.createEl("option", { value: "none", text: "-" });
-    headingDropdown.createEl("option", { value: "today", text: "Сегодняшний день" });
-    headingDropdown.createEl("option", { value: "choose", text: "Выбрать день" });
-    headingDropdown.value = this.dailyHeadingMode;
-    headingDropdown.addEventListener("change", () => {
-      const newMode = headingDropdown.value as "today" | "choose" | "none";
-      if (newMode === "choose") {
-        const modal = new DailyHeadingDateModal(this.app, (value) => {
-          if (value) {
-            this.dailyHeadingMode = "choose";
-            this.dailyHeadingDate = value;
-            lastMode = "choose";
-            headingDropdown.value = "choose";
-            headingSummary.setText(getHeadingSummary());
-          } else {
-            this.dailyHeadingMode = lastMode;
-            this.dailyHeadingDate = this.dailyHeadingMode === "choose" ? this.dailyHeadingDate : "";
-            headingDropdown.value = lastMode;
-            headingSummary.setText(getHeadingSummary());
-          }
-        }, "Дата ежедневной заметки");
-        modal.open();
-      } else {
-        this.dailyHeadingMode = newMode;
-        this.dailyHeadingDate = "";
-        lastMode = newMode;
-        headingSummary.setText(getHeadingSummary());
-      }
-    });
-    const btnRow = form.createDiv({ cls: "opa-create-task-buttons" });
-    btnRow.createEl("button", { text: "Отмена", cls: "mod-secondary" }).onclick = () => this.close();
-    const createBtn = btnRow.createEl("button", { text: "Создать", cls: "mod-cta" });
-    createBtn.onclick = () => {
-      if (!this.name.trim()) {
-        new Notice("Введите название.");
-        return;
-      }
-      this.onDone({
-        name: this.name.trim(),
-        project: this.project,
-        context: this.context,
-        environment: this.environment,
-        date: this.dateMode === "today" ? "" : this.dateChosen,
-        difficulty: this.ctx.plugin.settings.enableGamification ? this.difficulty : "",
-        status: this.status,
-        group: this.group,
-        templateKey: this.templateKey,
-        dailyHeadingMode: this.dailyHeadingMode,
-        dailyHeadingDate: this.dailyHeadingDate,
-        customPlaceholders: { ...this.customPlaceholders },
-        deadline: this.ctx.plugin.settings.enableDeadline ? this.deadline : undefined,
-      });
-      this.close();
-    };
-    const onEnter = (evt: KeyboardEvent) => {
-      if (evt.key !== "Enter") return;
-      if (!this.modalEl.isConnected) return;
-      const active = document.activeElement;
-      if (active?.matches("input, textarea, select, button")) return;
-      if (active && active !== document.body && !this.modalEl.contains(active)) return;
-      evt.preventDefault();
-      evt.stopPropagation();
-      createBtn.click();
-    };
-    document.addEventListener("keydown", onEnter, true);
-    const originalOnClose = this.onClose.bind(this);
-    this.onClose = () => {
-      document.removeEventListener("keydown", onEnter, true);
-      originalOnClose();
-    };
-  }
-}
-
-class CreateProjectModal extends Modal {
-  private name = "";
-
-  constructor(
-    private ctx: ModuleContext,
-    private onDone: (p: { name: string }) => void
-  ) {
-    super(ctx.app);
-    this.setTitle("Создать проект");
-  }
-
-  onOpen(): void {
-    this.modalEl.addClass("opa-create-task-modal");
-    const { contentEl } = this;
-    const form = contentEl.createDiv({ cls: "opa-create-task-form" });
-    new Setting(form).setName("Имя проекта").addText((t) =>
-      t.setPlaceholder("Название").onChange((v) => (this.name = v))
-    );
-    const btnRow = form.createDiv({ cls: "opa-create-task-buttons" });
-    btnRow.createEl("button", { text: "Отмена", cls: "mod-secondary" }).onclick = () => this.close();
-    const createBtn = btnRow.createEl("button", { text: "Создать", cls: "mod-cta" });
-    createBtn.onclick = () => {
-      if (!this.name.trim()) {
-        new Notice("Введите имя проекта.");
-        return;
-      }
-      this.onDone({ name: this.name.trim() });
-      this.close();
-    };
-    const onEnter = (evt: KeyboardEvent) => {
-      if (evt.key !== "Enter") return;
-      if (!this.modalEl.isConnected) return;
-      const active = document.activeElement as HTMLElement | null;
-      if (!active || !this.modalEl.contains(active)) return;
-      if (active.closest?.("button") && active.textContent?.trim() === "Отмена") return;
-      evt.preventDefault();
-      evt.stopPropagation();
-      createBtn.click();
-    };
-    document.addEventListener("keydown", onEnter, true);
-    const originalOnClose = this.onClose.bind(this);
-    this.onClose = () => {
-      document.removeEventListener("keydown", onEnter, true);
-      originalOnClose();
-    };
-  }
-}
-
 const DAILY_FILENAME_REGEX = /^\d{2}-\d{2}-\d{4}\.md$/;
 
-export class NoteTemplatesModule {
+export class NoteTemplatesModule implements PluginModule {
   private ctx: ModuleContext;
   private onDailyCreated: ((file: TFile) => void) | null = null;
 
@@ -1341,15 +277,20 @@ export class NoteTemplatesModule {
       const dateStr = file.basename;
       window.setTimeout(async () => {
         try {
-          const content = await this.ctx.app.vault.cachedRead(file);
-          if (content.includes("%%daily_nav%%")) {
-            const resolved = content.replace(/%%daily_nav%%/g, buildDailyNavLine(dateStr));
-            await this.ctx.app.vault.modify(file, resolved);
-            return;
+          let needsContent = false;
+          await this.ctx.app.vault.process(file, (content) => {
+            if (content.includes("%%daily_nav%%")) {
+              return content.replace(/%%daily_nav%%/g, buildDailyNavLine(dateStr));
+            }
+            needsContent = content.trim() === "";
+            return content;
+          });
+          if (needsContent) {
+            const newContent = await this.getDailyNoteContentForDate(dateStr);
+            await this.ctx.app.vault.process(file, (content) =>
+              content.trim() === "" ? newContent : content
+            );
           }
-          if (content.trim() !== "") return;
-          const newContent = await this.getDailyNoteContentForDate(dateStr);
-          await this.ctx.app.vault.modify(file, newContent);
         } catch (e) {
           console.error("[OPA] daily create handler:", e);
         }
@@ -1358,20 +299,26 @@ export class NoteTemplatesModule {
     this.ctx.app.workspace.onLayoutReady(() => {
       if (!this.onDailyCreated) return;
       const vault = this.ctx.app.vault as unknown as {
-        on(e: "create", cb: (f: TFile) => void): import("obsidian").EventRef;
+        on(e: "create", cb: (f: TFile) => void): EventRef;
       };
       this.ctx.plugin.registerEvent(vault.on("create", this.onDailyCreated));
     });
 
     this.ctx.plugin.addCommand({
-      id: "create-task-or-project",
-      name: "Создать задачу или проект",
-      callback: () => this.openCreateTaskOrProject(),
-    });
-    this.ctx.plugin.addCommand({
       id: "create-task",
       name: "Создать задачу",
       callback: () => this.openCreateTask(),
+    });
+    this.ctx.plugin.addCommand({
+      id: "create-task-from-line",
+      name: "Создать задачу из текущей строки",
+      editorCallback: (editor, view) => void this.openCreateTaskFromEditor(editor, view),
+    });
+    this.ctx.plugin.addCommand({
+      // id прежний (команда называлась «Запись о задаче за сегодня»): по нему Obsidian хранит назначенный хоткей
+      id: "task-daily-entry-today",
+      name: "Запись о задаче",
+      checkCallback: (checking) => this.runEntryForActiveTask(checking),
     });
     this.ctx.plugin.addCommand({
       id: "create-project",
@@ -1380,7 +327,7 @@ export class NoteTemplatesModule {
     });
     this.ctx.plugin.addCommand({
       id: "create-daily-note",
-      name: "Создать ежедневную заметку",
+      name: "Открыть или создать ежедневную заметку",
       callback: () => this.createDailyNote(),
     });
     this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-daily-nav", (_source, el) => {
@@ -1389,7 +336,7 @@ export class NoteTemplatesModule {
   }
 
   unload(): void {
-    // Событие create зарегистрировано через registerEvent — снимается автоматически.
+    // Событие create зарегистрировано через registerEvent - снимается автоматически.
     this.onDailyCreated = null;
   }
 
@@ -1405,30 +352,7 @@ export class NoteTemplatesModule {
     }
   }
 
-  private openCreateTaskOrProject(): void {
-    const modal = new CreateTaskOrProjectModal(this.ctx, () => this.openCreateTask(), () => this.openCreateProject());
-    modal.open();
-  }
-
-  private openCreateNote(): void {
-    const modal = new CreateNoteModal(
-      this.ctx,
-      () => this.openCreateTask(),
-      () => this.openCreateProject(),
-      () => this.createDailyNote(),
-      () => this.openChooseTemplate()
-    );
-    modal.open();
-  }
-
-  private openChooseTemplate(): void {
-    const modal = new ChooseTemplateModal(this.ctx, (templatePath, name) =>
-      this.createFromTemplate(templatePath, name)
-    );
-    modal.open();
-  }
-
-  /** Создаёт папку templates/task-templates и файл-пример task-example.md, если его ещё нет. Вызывается из команды и из настроек. */
+  /** Создаёт папку templates/task-templates и файл-пример task-example.md, если его ещё нет. Вызывается из настроек. */
   async createExampleTaskTemplate(): Promise<void> {
     const folder = Paths.TASK_TEMPLATES_FOLDER;
     const path = `${folder}/${DEFAULT_TASK_TEMPLATE_EXAMPLE_FILENAME}`;
@@ -1442,72 +366,139 @@ export class NoteTemplatesModule {
     new Notice("Создан пример шаблона задачи: " + path);
   }
 
-  /** Открыть модалку создания задачи. options.defaultName — предзаполнить название; options.onSuccess — вызвать после успешного создания. */
+  /**
+   * Открыть модалку создания задачи. options.defaultName - предзаполнить название; options.defaultProject - проект
+   * (из привязки записи блокнота); options.onSuccess - вызвать после успешного создания (с файлом задачи; если
+   * задача не создана, например нет шаблона, - не вызывается); options.dailySource - строка ежедневной заметки,
+   * которую заменить заголовком задачи.
+   */
   async openCreateTask(options?: {
     defaultName?: string;
-    onSuccess?: () => void | Promise<void>;
+    defaultProject?: string;
+    onSuccess?: (file: TFile) => void | Promise<void>;
+    dailySource?: DailySourceLine;
   }): Promise<void> {
     const [projects, taskTemplates] = await Promise.all([
       this.ctx.plugin.getProjectsSortedByTaskCount(),
       getTaskTemplatesList(this.ctx.app),
     ]);
-    const templatePrompts = await getTaskTemplatePrompts(
-      this.ctx.app,
-      taskTemplates.map((t) => t.key)
-    );
-    const meta: ExistingTaskMeta & { initialName?: string } = {
+    const meta: ExistingTaskMeta = {
       ...getExistingTaskMeta(this.ctx.app),
       projects,
       taskTemplates,
-      templatePrompts,
       initialName: options?.defaultName,
+      initialDate: options?.dailySource?.date,
+      initialProject: options?.defaultProject,
     };
-    const onDone = (p: {
-      name: string;
-      project: string;
-      context: string;
-      environment: string;
-      date: string;
-      difficulty: string;
-      status: string;
-      group: string;
-      templateKey: string;
-      dailyHeadingMode: "today" | "choose" | "none";
-      dailyHeadingDate: string;
-      customPlaceholders: Record<string, string>;
-      deadline?: string;
-    }) => {
-      void this.createTask(p).then(async () => {
-        await options?.onSuccess?.();
+    const onDone = (p: CreateTaskFormResult) => {
+      return this.createTask(p, options?.dailySource).then(async (file) => {
+        if (file) await options?.onSuccess?.(file);
       });
     };
     const modal = new CreateTaskModal(this.ctx, onDone, meta);
     modal.open();
   }
 
-  private openCreateProject(): void {
-    const modal = new CreateProjectModal(this.ctx, (p) => this.createProject(p));
-    modal.open();
+  /**
+   * Команда «Создать задачу из текущей строки»: название - выделение или строка под курсором
+   * (без маркеров списка и ссылок), а если заметка ежедневная - после создания эта строка станет заголовком задачи.
+   */
+  private async openCreateTaskFromEditor(editor: Editor, view: MarkdownView | MarkdownFileInfo): Promise<void> {
+    const cursorLine = editor.getCursor("from").line;
+    const lineText = editor.getLine(cursorLine);
+    const selection = editor.getSelection();
+    const defaultName = taskNameFromEditorLine(selection.trim() ? selection : lineText);
+    const file = view.file;
+    let dailySource: DailySourceLine | undefined;
+    if (file && this.isDailyNoteFile(file) && lineText.trim()) {
+      dailySource = { path: file.path, date: file.basename, line: cursorLine, lineText };
+    }
+    await this.openCreateTask({ defaultName, dailySource });
   }
 
-  private async createFromTemplate(templatePath: string, name: string): Promise<void> {
-    const file = this.ctx.app.vault.getAbstractFileByPath(templatePath);
-    if (!(file instanceof TFile)) {
-      new Notice("Шаблон не найден: " + templatePath);
-      return;
+  private isDailyNoteFile(file: TFile): boolean {
+    const folder = Paths.DAILY_FOLDER.replace(/\/?$/, "");
+    return file.path.startsWith(folder + "/") && DAILY_FILENAME_REGEX.test(file.name);
+  }
+
+  /** Активная заметка, если это задача (по frontmatter, как на доске; шаблоны и страницы проектов не считаются). */
+  private activeTaskFile(): TFile | null {
+    const file = this.ctx.app.workspace.getActiveFile();
+    if (!file || isTemplateFile(file)) return null;
+    return isTaskNote(file, this.ctx.app.metadataCache.getFileCache(file)) ? file : null;
+  }
+
+  /** Команда «Запись о задаче»: доступна только в открытой заметке-задаче. */
+  private runEntryForActiveTask(checking: boolean): boolean {
+    const file = this.activeTaskFile();
+    if (!file) return false;
+    if (!checking) void this.chooseDateAndOpenEntry(file);
+    return true;
+  }
+
+  /**
+   * Команда «Запись о задаче»: окно даты открывается на сегодняшнем дне (Enter - запись за сегодня,
+   * ← и Enter - за вчера), запись идёт в ежедневную на выбранный день. Отмена (Esc, клик вне окна) ничего не меняет.
+   */
+  private async chooseDateAndOpenEntry(taskFile: TFile): Promise<void> {
+    const date = await this.pickEntryDate();
+    if (!date) return;
+    await this.openEntryForTask(taskFile, formatDateDDMMYYYY(date));
+  }
+
+  /** Окно выбора дня записи, по умолчанию сегодня; null - отмена. */
+  private pickEntryDate(): Promise<Date | null> {
+    return new Promise((resolve) => {
+      new DatePickerModal(this.ctx.app, { title: "Дата записи", initial: new Date(), onDone: resolve }).open();
+    });
+  }
+
+  /**
+   * Заголовок задачи в ежедневной заметке на день dateStr (DD-MM-YYYY; заметка и заголовок создаются
+   * при необходимости), затем ежедневная открывается с курсором в конце секции задачи -
+   * работа идёт в ежедневной, задача остаётся для чтения.
+   */
+  private async openEntryForTask(taskFile: TFile, dateStr: string): Promise<void> {
+    const taskName = taskFile.basename;
+    const dailyFile = await this.resolveDailyFile(dateStr);
+    const heading = dailyTaskHeading(taskName);
+    await this.ctx.app.vault.process(dailyFile, (content) =>
+      content.includes(heading) ? content : appendHeadingBlockToDaily(content, buildDailyHeadingBlock(taskName))
+    );
+    await this.openDailyAtHeading(dailyFile, heading);
+  }
+
+  /**
+   * Открыть ежедневную заметку в режиме редактирования и поставить курсор в секцию задачи: в конец последней
+   * строки записи, а в пустой секции - под заголовок. Открытый редактор подхватывает только что записанный
+   * заголовок с небольшой задержкой, поэтому строка ищется с повторами.
+   */
+  private async openDailyAtHeading(dailyFile: TFile, heading: string): Promise<void> {
+    await openOrRevealFile(this.ctx.app, dailyFile);
+    const view = this.ctx.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view || view.file?.path !== dailyFile.path) return;
+    if (view.getMode() === "preview") {
+      await view.setState({ ...view.getState(), mode: "source" }, { history: false });
     }
-    let content = await this.ctx.app.vault.read(file);
-    content = content.replace(/%%projectName%%/g, name).replace(/%%project%%/g, name);
-    const safeName = name.replace(/[/\\]/g, "-") + ".md";
-    const path = safeName;
-    try {
-      const created = await this.ctx.app.vault.create(path, content);
-      new Notice(`Создана заметка: ${name}`);
-      await this.ctx.app.workspace.getLeaf(true).openFile(created);
-    } catch (e) {
-      console.error(e);
-      new Notice(`Не удалось создать заметку «${name}» (файл уже существует?)`);
+    const editor = view.editor;
+    let lines: string[] = [];
+    let headingLine = -1;
+    for (let attempt = 0; attempt < 10 && headingLine === -1; attempt++) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 100));
+      lines = editor.getValue().split("\n");
+      headingLine = lines.findIndex((line) => line.trim() === heading);
     }
+    if (headingLine === -1) return;
+    const target = sectionCursorPosition(lines, headingLine);
+    if (target.insertNewline) editor.replaceRange("\n", { line: headingLine, ch: lines[headingLine].length });
+    editor.setCursor({ line: target.line, ch: target.ch });
+    editor.scrollIntoView({ from: { line: headingLine, ch: 0 }, to: { line: target.line, ch: 0 } }, true);
+    editor.focus();
+  }
+
+  private openCreateProject(): void {
+    const modal = new CreateProjectModal(this.ctx.app, (p) => this.createProject(p));
+    modal.open();
   }
 
   private async getTaskTemplateContent(key: string): Promise<string> {
@@ -1522,15 +513,15 @@ export class NoteTemplatesModule {
     return await this.ctx.app.vault.cachedRead(file);
   }
 
-  /** Одно значение — как есть; несколько через запятую — YAML-массив для фронтматтера (project, context, environment). */
-  private formatYamlList(valueStr: string): string {
+  /** Одно значение остаётся scalar, несколько значений становятся YAML sequence. */
+  private formatYamlList(valueStr: string): PlaceholderValue {
     const parts = (valueStr ?? "")
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
     if (parts.length === 0) return "";
     if (parts.length === 1) return parts[0];
-    return "\n" + parts.map((p) => `  - ${p}`).join("\n");
+    return parts;
   }
 
   private async getProjectTemplateContent(): Promise<string> {
@@ -1545,126 +536,110 @@ export class NoteTemplatesModule {
     return DEFAULT_DAILY;
   }
 
-  private async createTask(p: {
-    name: string;
-    project: string;
-    context: string;
-    environment: string;
-    date: string;
-    difficulty: string;
-    status: string;
-    group: string;
-    templateKey: string;
-    dailyHeadingMode: "today" | "choose" | "none";
-    dailyHeadingDate: string;
-    customPlaceholders: Record<string, string>;
-    deadline?: string;
-  }): Promise<void> {
-    const resolvedDate = p.date.trim() || formatDDMMYYYY(new Date());
+  /**
+   * Создать заметку задачи по форме. dailySource - строка ежедневной заметки, из которой вызвана команда:
+   * если дата ежедневной в форме совпадает с датой этой заметки, строка заменяется заголовком задачи на месте.
+   */
+  /** Создать задачу по данным формы; null - задача не создана (например, нет шаблона). */
+  private async createTask(p: CreateTaskFormResult, dailySource?: DailySourceLine): Promise<TFile | null> {
+    const resolvedDate = p.date.trim() || formatDateDDMMYYYY(new Date());
     let content = await this.getTaskTemplateContent(p.templateKey);
     if (!content && p.templateKey !== "task") {
       new Notice(`Шаблон не найден: ${Paths.TASK_TEMPLATES_FOLDER}/${p.templateKey}.md`);
-      return;
+      return null;
     }
     if (!content) content = DEFAULT_TASK;
     const contentTarget = parseTaskContentTargetFromTemplate(content);
-    content = content
-      .replace(/%%project%%/g, this.formatYamlList(p.project))
-      .replace(/%%context%%/g, this.formatYamlList(p.context))
-      .replace(/%%environment%%/g, this.formatYamlList(p.environment))
-      .replace(/%%date%%/g, resolvedDate)
-      .replace(/%%difficulty%%/g, p.difficulty)
-      .replace(/%%group%%/g, p.group);
-    if (p.status.trim() !== "") {
-      content = content.replace(/(\r?\n)(status:\s*)[^\r\n]*/m, `$1$2${p.status.trim()}`);
-    } else {
-      content = content.replace(/\r?\nstatus:\s*[^\r\n]*/g, "");
-    }
-    const enableDeadline = this.ctx.plugin.settings.enableDeadline ?? false;
+    content = content.replace(/```dataviewjs[\s\S]*?```/g, "```opa-task-view\n```");
+    let { frontmatter, body } = splitFrontmatterAndBody(content);
+    const yamlValues: Record<string, PlaceholderValue> = {
+      project: this.formatYamlList(p.project),
+      context: this.formatYamlList(p.context),
+      environment: this.formatYamlList(p.environment),
+      date: resolvedDate,
+      difficulty: p.difficulty,
+      group: p.group,
+    };
+    frontmatter = replaceFrontmatterPlaceholders(frontmatter, yamlValues);
+    body = replacePlaceholders(body, {
+      project: p.project,
+      context: p.context,
+      environment: p.environment,
+      date: resolvedDate,
+      difficulty: p.difficulty,
+      group: p.group,
+    });
+    // Статус из формы записывается всегда - и когда в шаблоне нет ключа status (раньше он тогда терялся);
+    // пустой статус убирает ключ.
+    const status = p.status.trim();
+    frontmatter = status
+      ? setFrontmatterValue(frontmatter, "status", status)
+      : deleteFrontmatterKey(frontmatter, "status");
+    const enableDeadline = this.ctx.plugin.settings.enableDeadline;
     if (enableDeadline) {
       const deadlineVal = p.deadline ?? "";
-      if (content.includes("%%deadline%%")) {
-        content = content.replace(/%%deadline%%/g, deadlineVal);
-      } else {
-        content = content.replace(
-          /(\ndate:\s*[^\n]+)(\r?\n)/m,
-          (_, dateLine, nl) => `${dateLine}${nl}deadline: "${deadlineVal}"${nl}`
-        );
-      }
+      frontmatter = replaceFrontmatterPlaceholders(frontmatter, { deadline: deadlineVal });
+      frontmatter = setFrontmatterValue(frontmatter, "deadline", deadlineVal);
+      body = replacePlaceholders(body, { deadline: deadlineVal });
     } else {
-      content = content.replace(/\n?\s*deadline:\s*["']?%%deadline%%["']?\s*\r?\n?/g, "\n");
+      frontmatter = frontmatter.replace(/\n?\s*deadline:\s*["']?%%deadline%%["']?\s*\r?\n?/g, "\n");
     }
-    for (const [k, v] of Object.entries(p.customPlaceholders ?? {})) {
-      if (v != null && v !== "") {
-        content = content.replace(new RegExp(`%%${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}%%`, "g"), v);
-      }
-    }
-    content = content.replace(/```dataviewjs[\s\S]*?```/g, "```opa-task-view\n```");
-    const { frontmatter, body } = splitFrontmatterAndBody(content);
-    const splitBodies = splitTemplateBodyByTarget(body, contentTarget);
-    const taskBodyContent = removeLinesWithUnfilledPlaceholders(splitBodies.taskBody).trim();
-    const dailyBodyContent = stripTaskViewBlocks(
-      removeLinesWithUnfilledPlaceholders(splitBodies.dailyBody)
-    );
-    const shouldWriteTaskBody = taskBodyContent.length > 0;
-    const shouldWriteDailyBody = dailyBodyContent.length > 0;
+    // В заметку задачи идёт только часть шаблона для задачи; часть для ежедневной (<!-- opa:daily -->) не используется:
+    // шаблон нужен ради проекта, группы и скелета заметки, текст в ежедневную пишется руками.
+    const taskBodyContent = removeLinesWithUnfilledPlaceholders(
+      splitTemplateBodyByTarget(body, contentTarget).taskBody
+    ).trim();
 
     const safeName = p.name.replace(/[/\\]/g, "-") + ".md";
     const path = safeName;
-    const taskFileRawContent = shouldWriteTaskBody
-      ? `${frontmatter}${taskBodyContent ? `\n${taskBodyContent}\n` : "\n"}`
-      : `${frontmatter}\n`;
+    if (this.ctx.app.vault.getAbstractFileByPath(path)) {
+      throw new Error(`Задача «${p.name}» уже существует.`);
+    }
+    const taskFileRawContent = taskBodyContent ? `${frontmatter}\n${taskBodyContent}\n` : `${frontmatter}\n`;
     const taskFileContent = stripOpaFrontmatterFromContent(taskFileRawContent);
     const file = await this.ctx.app.vault.create(path, taskFileContent);
     new Notice(`Создана задача: ${p.name}`);
     await this.ctx.app.workspace.getLeaf(true).openFile(file);
-    if (p.status.trim().toLowerCase() === "готово") {
-      this.ctx.eventBus.emit("task:completed", {
+    if (status.toLowerCase() === "готово") {
+      await this.ctx.eventBus.emit("task:completed", {
         path: file.path,
         difficulty: p.difficulty?.trim() ? p.difficulty : null,
       });
     }
     this.ctx.plugin.tasksDashboard?.scheduleRefresh();
-    await this.ensureDailyHeading(
-      p.name,
-      p.dailyHeadingMode,
-      p.dailyHeadingDate,
-      shouldWriteDailyBody ? dailyBodyContent : ""
-    );
+    const replaced = dailySource ? await this.replaceDailySourceLine(dailySource, p) : false;
+    if (!replaced) await this.ensureDailyHeading(p.name, p.dailyHeadingMode, p.dailyHeadingDate);
     if (
       enableDeadline &&
       p.deadline?.trim() &&
       this.ctx.plugin.settings.enableReminders &&
-      (this.ctx.plugin.settings.enableDeadlineReminders ?? true)
+      this.ctx.plugin.settings.enableDeadlineReminders
     ) {
-      const parsed = parseDayMonthYear(p.deadline.trim());
-      if (parsed) {
-        const deadlineDate = new Date(
-          parsed.year,
-          parsed.month,
-          parsed.day,
-          10,
-          0
-        );
-        const leadDays = Math.max(
-          0,
-          this.ctx.plugin.settings.deadlineReminderLeadDays ?? 1
-        );
+      const deadlineDate = parseDDMMYYYY(p.deadline);
+      if (deadlineDate) {
+        deadlineDate.setHours(10, 0, 0, 0);
+        const leadDays = Math.max(0, this.ctx.plugin.settings.deadlineReminderLeadDays);
         const reminderDate = new Date(deadlineDate);
         reminderDate.setDate(reminderDate.getDate() - leadDays);
-        const reminderLine = `- [ ] Дедлайн по задаче: ${p.name} ${formatReminderDateTag(reminderDate)}`;
-        const data = await readDataFile(this.ctx.plugin);
-        const reminders = [...(data.reminders ?? []), reminderLine];
-        await writeDataFile(this.ctx.plugin, { reminders });
-        await this.ctx.plugin.remindersIndex.refreshDataJson();
-        this.ctx.plugin.reminders?.updateState?.();
+        const reminderLine = buildReminderLine(`Дедлайн по задаче: ${p.name}`, reminderDate);
+        const reminders = this.ctx.plugin.reminders;
+        if (reminders) {
+          await reminders.addReminderToData(reminderLine);
+        } else {
+          await updateDataFile(this.ctx.plugin, (data) => ({ reminders: [...(data.reminders ?? []), reminderLine] }));
+          await this.ctx.plugin.remindersIndex.refreshDataJson();
+        }
       }
     }
+    return file;
   }
 
   private async createProject(p: { name: string }): Promise<void> {
-    let content = await this.getProjectTemplateContent();
-    content = content.replace(/%%projectName%%/g, p.name);
+    const templateContent = await this.getProjectTemplateContent();
+    let { frontmatter, body } = splitFrontmatterAndBody(templateContent);
+    frontmatter = replaceFrontmatterPlaceholders(frontmatter, { projectName: p.name });
+    body = replacePlaceholders(body, { projectName: p.name });
+    let content = frontmatter ? `${frontmatter}\n${body}` : body;
     content = content.replace(/```dataviewjs[\s\S]*?```/g, "```opa-project-view\n```");
 
     const path = p.name.endsWith(".md") ? p.name : p.name + ".md";
@@ -1688,109 +663,106 @@ export class NoteTemplatesModule {
     return content.replace(/%%daily_nav%%/g, buildDailyNavLine(dateStr));
   }
 
-  private async ensureDailyHeading(
-    taskName: string,
-    mode: "today" | "choose" | "none",
-    dateStr: string,
-    sectionContent = ""
-  ): Promise<void> {
-    if (mode === "none") return;
+  /** Дата ежедневной заметки по режиму формы; null - не писать («-» или некорректная дата). */
+  private resolveDailyTargetDate(mode: "today" | "choose" | "none", dateStr: string): string | null {
+    if (mode === "none") return null;
+    if (mode === "today") return formatDateDDMMYYYY(new Date());
+    const targetDate = dateStr.trim();
+    return parseDDMMYYYY(targetDate) ? targetDate : null;
+  }
 
-    let targetDate = "";
-    if (mode === "today") {
-      targetDate = formatDDMMYYYY(new Date());
-    } else if (mode === "choose") {
-      targetDate = dateStr.trim();
-      if (!parseDayMonthYear(targetDate)) return;
-    }
-    if (!targetDate) return;
-
+  /** Файл ежедневной заметки на дату; создаётся по шаблону, если его ещё нет. */
+  private async resolveDailyFile(targetDate: string): Promise<TFile> {
     const dailyFolder = Paths.DAILY_FOLDER.replace(/\/?$/, "");
     const path = `${dailyFolder}/${targetDate}.md`;
     const existing = this.ctx.app.vault.getAbstractFileByPath(path);
-
-    let file: TFile;
-    if (existing && existing instanceof TFile) {
-      file = existing;
-    } else {
-      await this.ensureFolderExists(dailyFolder);
-      const content = await this.getDailyNoteContentForDate(targetDate);
-      file = await this.ctx.app.vault.create(path, content);
-      new Notice(`Создана ежедневная заметка: ${targetDate}`);
-    }
-
-    const headingToAdd = `### [[${taskName}]]`;
-    const dailyNoteContent = await this.ctx.app.vault.read(file);
-    if (dailyNoteContent.includes(headingToAdd)) {
-      if (sectionContent.trim()) {
-        await this.upsertDailySectionContent(file, headingToAdd, sectionContent);
-      }
-      return;
-    }
-
-    let prefix = "";
-    const trimmedContent = dailyNoteContent.trim();
-    if (trimmedContent.length > 0) {
-      const isJustNavBar =
-        trimmedContent.includes("←") &&
-        trimmedContent.includes("→") &&
-        trimmedContent.split("\n").length === 1;
-      if (isJustNavBar) {
-        prefix = dailyNoteContent.endsWith("\n") ? "" : "\n";
-      } else if (dailyNoteContent.endsWith("\n\n")) {
-        prefix = "";
-      } else if (dailyNoteContent.endsWith("\n")) {
-        prefix = "\n";
-      } else {
-        prefix = "\n\n";
-      }
-    }
-
-    const headingBlock = sectionContent.trim()
-      ? `${headingToAdd}\n${sectionContent.trim()}\n`
-      : `${headingToAdd}\n`;
-    await this.ctx.app.vault.modify(file, dailyNoteContent + `${prefix}${headingBlock}`);
+    if (existing instanceof TFile) return existing;
+    await this.ensureFolderExists(dailyFolder);
+    const content = await this.getDailyNoteContentForDate(targetDate);
+    const file = await this.ctx.app.vault.create(path, content);
+    new Notice(`Создана ежедневная заметка: ${targetDate}`);
+    return file;
   }
 
-  private async upsertDailySectionContent(
-    file: TFile,
-    heading: string,
-    sectionContent: string
-  ): Promise<void> {
-    const normalizedSection = sectionContent.trim();
-    if (!normalizedSection) return;
-    const dailyNoteContent = await this.ctx.app.vault.read(file);
-    const escapedHeading = heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const sectionRegex = new RegExp(
-      `(^|\\n)${escapedHeading}\\n([\\s\\S]*?)(?=\\n###\\s|$)`,
-      "m"
-    );
-    const match = dailyNoteContent.match(sectionRegex);
-    if (!match) return;
-    const existingSectionBody = (match[2] ?? "").trim();
-    if (existingSectionBody.length > 0) return;
+  /**
+   * Задача создана из строки ежедневной заметки: заменить эту строку заголовком задачи на месте.
+   * Только если дата ежедневной в форме - та же заметка (иначе, как и при «-», строка остаётся, а заголовок
+   * идёт по обычному правилу). false - заменить не удалось (строка уже изменена или файл пропал): вызывающий код
+   * дописывает заголовок как обычно.
+   */
+  private async replaceDailySourceLine(source: DailySourceLine, p: CreateTaskFormResult): Promise<boolean> {
+    const targetDate = this.resolveDailyTargetDate(p.dailyHeadingMode, p.dailyHeadingDate);
+    if (!targetDate || targetDate !== source.date) return false;
+    const file = this.ctx.app.vault.getAbstractFileByPath(source.path);
+    if (!(file instanceof TFile)) return false;
+    const headingBlock = buildDailyHeadingBlock(p.name);
+    let replaced = false;
+    await this.ctx.app.vault.process(file, (content) => {
+      if (content.includes(dailyTaskHeading(p.name))) return content;
+      const next = replaceLineWithHeadingBlock(content, source.line, source.lineText, headingBlock);
+      if (next == null) return content;
+      replaced = true;
+      return next;
+    });
+    return replaced;
+  }
 
-    const replacement = `${match[1]}${heading}\n${normalizedSection}\n`;
-    const updatedContent = dailyNoteContent.replace(sectionRegex, replacement);
-    if (updatedContent === dailyNoteContent) return;
-    await this.ctx.app.vault.modify(file, updatedContent);
+  /** Заголовок задачи в ежедневной заметке на выбранную дату (если его там ещё нет). */
+  private async ensureDailyHeading(taskName: string, mode: "today" | "choose" | "none", dateStr: string): Promise<void> {
+    const targetDate = this.resolveDailyTargetDate(mode, dateStr);
+    if (!targetDate) return;
+    const file = await this.resolveDailyFile(targetDate);
+    const headingToAdd = dailyTaskHeading(taskName);
+    await this.ctx.app.vault.process(file, (dailyNoteContent) =>
+      dailyNoteContent.includes(headingToAdd)
+        ? dailyNoteContent
+        : appendHeadingBlockToDaily(dailyNoteContent, buildDailyHeadingBlock(taskName))
+    );
   }
 
   private async createDailyNote(): Promise<void> {
-    const dateStr = formatDDMMYYYY(new Date());
+    const dateStr = formatDateDDMMYYYY(new Date());
     const folder = Paths.DAILY_FOLDER.replace(/\/?$/, "");
     const path = `${folder}/${dateStr}.md`;
     const existing = this.ctx.app.vault.getAbstractFileByPath(path);
     if (existing instanceof TFile) {
-      await this.ctx.app.workspace.getLeaf(true).openFile(existing);
-      new Notice("Ежедневная заметка уже существует.");
+      // Заметка уже есть: перейти к ней (в открытую вкладку, если она есть), без уведомления
+      await openOrRevealFile(this.ctx.app, existing);
       return;
     }
     await this.ensureFolderExists(folder);
     const content = await this.getDailyNoteContentForDate(dateStr);
     const file = await this.ctx.app.vault.create(path, content);
     new Notice(`Создана ежедневная заметка: ${dateStr}`);
-    await this.ctx.app.workspace.getLeaf(true).openFile(file);
+    const leaf = this.ctx.app.workspace.getLeaf(true);
+    await leaf.openFile(file);
+    await this.placeCursorBelowDailyNav(leaf.view, file);
+  }
+
+  /**
+   * Новая ежедневная заметка открывается в режиме редактирования с курсором под строкой навигации
+   * «← … | … →», чтобы сразу писать. Только что открытый редактор получает содержимое с небольшой задержкой,
+   * поэтому текст читается с повторами (как в openDailyAtHeading).
+   */
+  private async placeCursorBelowDailyNav(view: unknown, dailyFile: TFile): Promise<void> {
+    if (!(view instanceof MarkdownView) || view.file?.path !== dailyFile.path) return;
+    if (view.getMode() === "preview") {
+      await view.setState({ ...view.getState(), mode: "source" }, { history: false });
+    }
+    const editor = view.editor;
+    let lines: string[] = [];
+    for (let attempt = 0; attempt < 10; attempt++) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 100));
+      lines = editor.getValue().split("\n");
+      if (lines.some((line) => line.trim() !== "")) break;
+    }
+    const target = newDailyNoteCursor(lines);
+    if (target.insertNewline) {
+      const last = target.line - 1;
+      editor.replaceRange("\n", { line: last, ch: lines[last].length });
+    }
+    editor.setCursor({ line: target.line, ch: target.ch });
+    editor.focus();
   }
 
   private renderDailyNav(el: HTMLElement): void {

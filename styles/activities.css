@@ -101,35 +101,6 @@
   font-size: 0.95em;
   color: var(--text-normal);
 }
-.opa-activity-last {
-  flex-shrink: 0;
-  font-size: 0.8em;
-  color: var(--text-muted);
-  margin-left: auto;
-  padding-left: 0.5rem;
-}
-
-.opa-activity-del {
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 1.2em;
-  line-height: 1;
-  cursor: pointer;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.opa-activity-del:hover {
-  color: var(--text-error);
-  background: var(--background-modifier-hover);
-}
-
 .opa-activities-actions {
   display: flex;
   flex-wrap: wrap;
@@ -157,6 +128,9 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+.is-mobile .opa-stats-modal-wrap.modal {
+  min-width: 0;
 }
 .opa-stats-modal-wrap .modal-content,
 .opa-stats-modal-wrap .opa-activities-stats-modal {
@@ -253,45 +227,7 @@
   color: var(--text-normal);
 }
 
-.opa-stats-grid-wrap {
-  margin-bottom: 0.5rem;
-}
-.opa-stats-month-label {
-  font-size: 0.8em;
-  color: var(--text-muted);
-}
-
-.opa-stats-grid {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 3px;
-  max-width: 280px;
-  margin-top: 0.25rem;
-}
-
-.opa-stats-cell {
-  aspect-ratio: 1;
-  min-width: 12px;
-  min-height: 12px;
-  max-width: 24px;
-  max-height: 24px;
-  border-radius: 3px;
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-}
-.opa-stats-cell-empty {
-  background: transparent;
-  border-color: transparent;
-}
-.opa-stats-cell-done {
-  background: var(--interactive-accent);
-  border-color: var(--interactive-accent);
-}
-.opa-stats-cell-future {
-  opacity: 0.5;
-}
-
-/* Линейный график за 30 дней */
+/* Линейный график по дням месяца */
 .opa-activities-stats-modal .opa-stats-chart-wrap {
   margin-top: 0.75rem;
   margin-bottom: 0.5rem;
@@ -446,11 +382,6 @@
   border: 1px solid var(--background-modifier-border);
   background-color: var(--background-primary-alt);
   color: var(--text-normal);
-}
-.opa-activities-modal-btns {
-  display: flex;
-  gap: 0.5rem;
-  justify-content: flex-end;
 }
 
 .opa-all-activities-modal .opa-activity-difficulty-wrap {

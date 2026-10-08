@@ -1,44 +1,63 @@
-import type { ModuleContext } from "./types";
-import { Paths } from "../core/Paths";
+import { TFile, Notice, Modal, type App, type EventRef } from "obsidian";
+import type { ModuleContext, PluginModule } from "./types";
+import { findUniqueLineIndexByText, toggleTaskCheckbox } from "../core/FileIO";
+import { emptyGamificationState, updateDataFile } from "../core/GamificationState";
+import { formatDateDDMMYYYY, formatDateKey } from "../core/DateUtils";
+import { inboxEntryAsOneLine } from "../core/InboxEntries";
 import {
-  read,
-  modify,
-  processFile,
-  findLineIndexByText,
-  replaceLineByText,
-  deleteLineAtIndex,
-  toggleTaskCheckbox,
-} from "../core/FileIO";
-import { updateDataFile } from "../core/GamificationState";
-
-const DEFAULT_REMINDER_REWARDS = { xp: 2, gold: 1 };
-
-import { App, TFile, Notice, Modal } from "obsidian";
-import {
-  REMINDER_DATE_TAG_REGEX,
+  applyReminderEdit,
+  buildReminderLine,
   formatReminderDateTag,
+  formatReminderTime,
   replaceReminderDateTag,
   fromNow,
+  insertNextRecurrenceLines,
   parseCompletedTaskWithRecurrence,
+  parseReminderDueFromText,
   parseRecurrenceFromText,
   buildNextRecurrenceLine,
   completedLineWithoutRecurrence,
   isRecurrenceCompletionOnTime,
+  reminderEditChanges,
+  reminderEditFields,
+  type ReminderEditChanges,
   type ReminderItem,
   type ReminderData,
+  type ReminderRecurrence,
 } from "../core/ReminderDataUtils";
+import {
+  applyReminderRewardIntent,
+  createReminderRewardIntent,
+  rewardIntentsFromText,
+  rewardMarker,
+  stripRewardMarkers,
+  type ReminderRewardIntent,
+} from "../core/ReminderRewards";
 import { UI_LABELS } from "../ui/Labels";
 import { createCollapsibleSection, createToggleSection } from "../ui/CollapsibleSection";
 import { BlockRegistry } from "../ui/BlockRegistry";
+import { isRenderUnchanged, markRendered, renderSignature } from "../ui/RenderCache";
+import { getSelectedText } from "../ui/SelectedText";
 
 const STORAGE_KEY_PREFIX = "opa-reminders-collapsed-";
 const FALLBACK_CHECK_MS = 60 * 1000;
 /** Резервная проверка смены календарного дня (если таймер на полночь пропущен). */
 const DAY_CHECK_INTERVAL_MS = 60 * 1000;
-
-function getCalendarDayKey(d = new Date()): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
+/** Пауза после правки файла пользователем перед обработкой выполненных повторяющихся напоминаний. */
+const FILE_CHANGE_DEBOUNCE_MS = 2500;
+/** Сколько хранить id начисленных наград (защита от повторного начисления при восстановлении по маркерам). */
+const MAX_REWARD_IDS = 500;
+/**
+ * Если действие из окна уведомления не удалось (строка в файле уже изменилась), то же напоминание
+ * не показывается снова в течение этого времени - иначе окно открывалось бы заново каждую секунду.
+ */
+const MUTE_AFTER_FAILURE_MS = 60 * 1000;
+/**
+ * Самая долгая пауза до следующей проверки. setTimeout хранит задержку 32-битным числом: при задержке больше
+ * ~24,8 суток он срабатывает раньше срока, обычно сразу, и проверка крутилась бы без пауз, пока ближайшее
+ * напоминание так далеко (например, ежемесячное сразу после выполнения). Через час таймер заводится заново.
+ */
+const MAX_CHECK_DELAY_MS = 60 * 60 * 1000;
 
 function msUntilNextLocalMidnight(from = new Date()): number {
   const next = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 1, 0, 0, 0, 0);
@@ -46,6 +65,18 @@ function msUntilNextLocalMidnight(from = new Date()): number {
 }
 
 export type { ReminderItem };
+
+/** Окно напоминания при правке: заголовок, текущие срок и повторение (без них - окно нового напоминания). */
+export interface ReminderModalOptions {
+  title?: string;
+  date?: Date;
+  recurrence?: ReminderRecurrence | null;
+}
+
+/** Значение поля datetime-local: локальные дата и время с точностью до минуты. */
+function toDateTimeLocalValue(date: Date): string {
+  return `${formatDateKey(date)}T${formatReminderTime(date)}`;
+}
 
 const SECTION_CONFIG: { key: Exclude<keyof ReminderData, "completed">; icon: string }[] = [
   { key: "overdue", icon: "🔥" },
@@ -86,27 +117,31 @@ function setArchiveGroupState(groupName: string, collapsed: boolean): void {
   } catch {}
 }
 
-export class RemindersModule {
+export class RemindersModule implements PluginModule {
   private ctx: ModuleContext;
   private registry: BlockRegistry;
   private nextCheckTimeoutId: ReturnType<typeof setTimeout> | null = null;
-  /** true пока открыто окно выбора даты переноса — не показывать новое уведомление */
+  /** true пока открыто окно выбора даты переноса - не показывать новое уведомление */
   private pickerModalOpen = false;
   /** восстановить фокус в поле ввода после добавления напоминания */
   private shouldRestoreFocus = false;
-  /** true пока открыто окно уведомления о напоминании — не открывать второе поверх */
+  /** true пока открыто окно уведомления о напоминании - не открывать второе поверх */
   notificationModalOpen = false;
-  /** true пока открыто окно настройки/создания напоминания — не показывать уведомление о срабатывании */
+  /** true пока открыто окно напоминания (новое или «Изменить») - не показывать уведомление о срабатывании */
   reminderSettingsModalOpen = false;
-  /** Идёт inline-правка строки — не перерисовывать список (иначе выкидывает из окна). */
-  private inlineEditActive = false;
-  /** Нужен рефреш после завершения правки. */
-  private pendingRefresh = false;
   /** Поколение рендера: отбрасываем устаревшие async-перерисовки, иначе старые даты затирают новые. */
   private renderEpoch = 0;
-  /** Последний известный календарный день — для пересчёта «сегодня/завтра/просрочено». */
-  private lastCalendarDayKey = getCalendarDayKey();
+  /** Последний известный календарный день - для пересчёта «сегодня/завтра/просрочено». */
+  private lastCalendarDayKey = formatDateKey(new Date());
   private midnightTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  /** Debounce на каждый файл отдельно: быстрые правки в нескольких файлах не теряются. */
+  private fileChangeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Пути, которые мы сами пишем - своё событие modify не считается правкой пользователя. */
+  private suppressRecurForPath = new Set<string>();
+  /** Напоминания, по которым действие из уведомления не удалось: ключ → до какого момента не показывать. */
+  private mutedUntil = new Map<string, number>();
+  /** Модуль выгружен: начатые до этого проверки не должны заводить таймеры и открывать окна. */
+  private disposed = false;
 
   constructor(ctx: ModuleContext) {
     this.ctx = ctx;
@@ -114,66 +149,10 @@ export class RemindersModule {
       app: ctx.app,
       isEnabled: () => ctx.plugin.settings.enableReminders,
       debounceMs: 250,
-      shouldRefresh: () => !this.inlineEditActive,
       domSelector: ".opa-reminders-view",
-      createRefresh: (el) => () => this.render(el),
+      createRefresh: (el) => (force) => this.render(el, force),
     });
   }
-
-  private isExcludedPath(path: string): boolean {
-    const prefix = Paths.TEMPLATES_FOLDER.replace(/\/?$/, "") + "/";
-    return path.startsWith(prefix) || path === Paths.TRASH_FILE;
-  }
-
-  /** Debounce на каждый файл отдельно: быстрые правки в нескольких файлах не теряются. */
-  private recurDebounceByPath = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly RECUR_DEBOUNCE_MS = 2500;
-
-  /** Обработать файл: для выполненных повторяющихся напоминаний создать следующее вхождение (если отмечено в самой заметке, не в блоке). */
-  private async processFileRecurringCompletions(filePath: string): Promise<void> {
-    if (!this.ctx.plugin.settings.enableReminders) return;
-    if (this.isExcludedPath(filePath)) return;
-    if (this.suppressRecurForPath.has(filePath)) return;
-    const file = this.ctx.app.vault.getAbstractFileByPath(filePath);
-    if (!file || !(file instanceof TFile)) return;
-    const content = await this.ctx.app.vault.read(file);
-    if (!content) return;
-    const lines = content.split("\n");
-    const dataPath = this.ctx.plugin.getGamificationDataPath();
-    if (filePath === dataPath) return;
-
-    const indices: number[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      const parsed = parseCompletedTaskWithRecurrence(lines[i].trim());
-      if (parsed) indices.push(i);
-    }
-    if (indices.length === 0) return;
-
-    const currentLines = lines.slice();
-    for (let k = indices.length - 1; k >= 0; k--) {
-      const lineIdx = indices[k];
-      const line = currentLines[lineIdx];
-      const parsed = parseCompletedTaskWithRecurrence(line.trim());
-      if (!parsed) continue;
-
-      const newLine = buildNextRecurrenceLine(parsed);
-      const textClean = (parsed.textPrefix + parsed.textSuffix).replace(REMINDER_DATE_TAG_REGEX, "").trim();
-
-      // Не создаём дубль, если следующее вхождение уже есть на строке ниже
-      const nextLine = currentLines[lineIdx + 1]?.trim() ?? "";
-      const nextHasRecur = /\(every\s+\d+\s+(day|days|week|weeks|month|months|year|years)\)/i.test(nextLine);
-      const nextTextClean = nextLine.replace(REMINDER_DATE_TAG_REGEX, "").replace(/\(every\s+\d+\s+(day|days|week|weeks|month|months|year|years)\)/gi, "").trim();
-      if (nextLine && nextHasRecur && nextTextClean === textClean) continue;
-
-      currentLines[lineIdx] = completedLineWithoutRecurrence(line, parsed.recurrenceFull);
-      currentLines.splice(lineIdx + 1, 0, newLine);
-    }
-    const newContent = currentLines.join("\n");
-    if (newContent !== content) await modify(this.ctx.app, filePath, newContent);
-  }
-
-  /** Пути, которые мы сами пишем — не запускать recur-обработку по своему modify. */
-  private suppressRecurForPath = new Set<string>();
 
   private withSuppressedRecur<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
     this.suppressRecurForPath.add(filePath);
@@ -183,37 +162,121 @@ export class RemindersModule {
     });
   }
 
-  private onVaultModifyForRecur = (file: TFile): void => {
-    if (!file.path.endsWith(".md")) return;
-    if (this.suppressRecurForPath.has(file.path)) return;
-    const existing = this.recurDebounceByPath.get(file.path);
+  /**
+   * Своя запись в заметку: индекс напоминаний обновляется из записанного текста сразу (а не по событию
+   * modify, которое может принести устаревший кэш), обработка «правки пользователя» для этого файла
+   * подавляется. Возвращает записанный текст или null, если transform ничего не изменил.
+   */
+  private async writeOwnChange(file: TFile, transform: (content: string) => string): Promise<string | null> {
+    let written: string | null = null;
+    await this.withSuppressedRecur(file.path, () =>
+      this.ctx.app.vault.process(file, (current) => {
+        const next = transform(current);
+        if (next === current) return current;
+        // Запись будет: событие modify по ней индекс должен пропустить (данные придут из updateFile ниже)
+        this.ctx.remindersIndex.suppressVaultModify(file.path);
+        written = next;
+        return next;
+      })
+    );
+    if (written != null) await this.ctx.remindersIndex.updateFile(file, written);
+    return written;
+  }
+
+  private onVaultModify = (file: TFile): void => {
+    // Путь фиксируем сейчас: TFile.path меняется при переименовании, а ключ таймера должен остаться тем же
+    const path = file.path;
+    if (!path.endsWith(".md")) return;
+    if (this.suppressRecurForPath.has(path)) return;
+    const existing = this.fileChangeTimers.get(path);
     if (existing) clearTimeout(existing);
-    this.recurDebounceByPath.set(
-      file.path,
+    this.fileChangeTimers.set(
+      path,
       setTimeout(() => {
-        this.recurDebounceByPath.delete(file.path);
-        this.processFileRecurringCompletions(file.path).then(() => this.scheduleRefresh());
-      }, this.RECUR_DEBOUNCE_MS)
+        this.fileChangeTimers.delete(path);
+        void this.handleFileChanged(file).catch((error) =>
+          console.error(`[Reminders] processing of ${file.path} failed:`, error)
+        );
+      }, FILE_CHANGE_DEBOUNCE_MS)
     );
   };
+
+  /**
+   * Правка заметки пользователем (после паузы). Файл читается один раз: для выполненных прямо в заметке
+   * повторяющихся напоминаний вставляется следующее вхождение, а маркеры незавершённых наград
+   * (см. ReminderRewards) доначисляются. Файл пишется только если есть что менять.
+   */
+  private async handleFileChanged(file: TFile): Promise<void> {
+    const { settings } = this.ctx.plugin;
+    if (!settings.enableReminders) return;
+    if (this.ctx.remindersIndex.isExcluded(file.path) || file.path === this.getDataPath()) return;
+    if (this.suppressRecurForPath.has(file.path)) return;
+    // Файл могли удалить или переименовать за время паузы
+    if (!(this.ctx.app.vault.getAbstractFileByPath(file.path) instanceof TFile)) return;
+
+    let content = await this.ctx.app.vault.read(file);
+    if (insertNextRecurrenceLines(content) !== content) {
+      const written = await this.writeOwnChange(file, (current) => insertNextRecurrenceLines(current));
+      if (written != null) content = written;
+      this.scheduleRefresh();
+    }
+    if (settings.enableGamification && (await this.recoverRewardsInFile(file, content))) {
+      await this.refreshGamificationBlocks();
+    }
+  }
 
   load(): void {
     this.ctx.remindersIndex.ensureSubscribed(() => this.scheduleRefresh());
     this.ctx.plugin.registerEvent(this.ctx.app.workspace.on("active-leaf-change", this.registry.scheduleRefresh));
     const vault = this.ctx.app.vault as unknown as {
-      on(e: "modify", cb: (f: TFile) => void): import("obsidian").EventRef;
+      on(e: "modify", cb: (f: TFile) => void): EventRef;
     };
-    this.ctx.plugin.registerEvent(vault.on("modify", this.onVaultModifyForRecur));
+    this.ctx.plugin.registerEvent(vault.on("modify", this.onVaultModify));
 
-    this.lastCalendarDayKey = getCalendarDayKey();
+    this.lastCalendarDayKey = formatDateKey(new Date());
     this.ctx.plugin.registerInterval(window.setInterval(() => this.checkCalendarDayChange(), DAY_CHECK_INTERVAL_MS));
     this.scheduleMidnightDayCheck();
     this.ctx.plugin.registerDomEvent(window, "focus", () => this.checkCalendarDayChange());
+    void this.recoverPendingRewardsOnStartup().catch((error) =>
+      console.error("[Reminders] pending reward recovery failed:", error)
+    );
 
-    this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-reminders-view", (_source, el) => {
+    this.ctx.plugin.registerMarkdownCodeBlockProcessor("opa-reminders-view", (_source, el, ctx) => {
       el.addClass("opa-reminders-view");
-      this.registry.register(el, () => this.render(el));
+      this.registry.register(el, (force) => this.render(el, force), ctx);
     });
+    this.registerCommands();
+  }
+
+  /** Команда «Новое напоминание» (для горячей клавиши, как «Запись в блокнот»). */
+  private registerCommands(): void {
+    this.ctx.plugin.addCommand({
+      id: "reminders-add",
+      name: UI_LABELS.reminders.addCommand,
+      checkCallback: (checking: boolean) => {
+        if (!this.ctx.plugin.settings.enableReminders) return false;
+        if (!checking) void this.addReminderFromCommand();
+        return true;
+      },
+    });
+  }
+
+  /**
+   * Окно нового напоминания поверх любой заметки: выделенный текст уже в поле текста (одной строкой -
+   * строка напоминания не переносится). После сохранения напоминание сразу в блоке, в уведомлении - его срок.
+   */
+  async addReminderFromCommand(): Promise<void> {
+    if (this.reminderSettingsModalOpen) return;
+    const L = UI_LABELS.reminders;
+    const result = await this.openReminderModal(inboxEntryAsOneLine(getSelectedText(this.ctx.app)));
+    if (!result) return;
+    try {
+      await this.addReminderToData(buildReminderLine(result.text, result.date, result.recurrence));
+      new Notice(L.notices.addedAt(`${formatDateDDMMYYYY(result.date)} ${formatReminderTime(result.date)}`));
+    } catch (error) {
+      console.error("[Reminders] add from command failed:", error);
+      new Notice(L.errorNotice);
+    }
   }
 
   /**
@@ -222,7 +285,7 @@ export class RemindersModule {
    */
   private checkCalendarDayChange(): void {
     if (!this.ctx.plugin.settings.enableReminders) return;
-    const today = getCalendarDayKey();
+    const today = formatDateKey(new Date());
     if (today === this.lastCalendarDayKey) return;
     this.lastCalendarDayKey = today;
     void this.forceRefreshAsync();
@@ -247,29 +310,18 @@ export class RemindersModule {
   }
 
   private scheduleRefresh = (): void => {
-    if (this.inlineEditActive) {
-      this.pendingRefresh = true;
-      return;
-    }
+    if (this.disposed) return;
     // Не трогаем renderEpoch здесь: иначе debounce после modify убивает in-flight forceRefresh
     this.registry.scheduleRefresh();
   };
 
-  /** Принудительное обновление блоков без задержки (сразу после добавления/изменения). */
-  private forceRefresh(): void {
-    void this.forceRefreshAsync();
-  }
-
   /**
-   * Обновить UI после мутации. Пока открыто уведомление/пикер — только помечаем:
-   * рефреш в этот момент часто не попадает в DOM homepage (блок отсоединён / затирается).
+   * Обновить UI после мутации: индекс уже актуальный, обновляем сразу. Пока открыто уведомление/пикер,
+   * рефреш часто не попадает в DOM homepage (блок отсоединён / затирается) - после закрытия окна блоки
+   * перерисовываются ещё раз (flushRefreshAfterModalClose).
    */
   private async refreshUiAfterMutation(): Promise<void> {
-    // Индекс уже актуальный — обновляем сразу; после закрытия modal — ещё раз (flushRefreshAfterModalClose)
     await this.forceRefreshAsync();
-    if (this.notificationModalOpen || this.pickerModalOpen || this.reminderSettingsModalOpen) {
-      this.pendingRefresh = true;
-    }
   }
 
   /**
@@ -278,17 +330,14 @@ export class RemindersModule {
    */
   private verifyIndexSoon(file: TFile): void {
     window.setTimeout(() => {
+      if (this.disposed) return;
       void this.ctx.remindersIndex.updateFile(file).then(() => this.forceRefreshAsync());
     }, 2300);
   }
 
-  /** То же, что forceRefresh, но с ожиданием отрисовки (после мутаций даты). */
+  /** Принудительное обновление блоков с ожиданием отрисовки (после мутаций даты). */
   private async forceRefreshAsync(): Promise<void> {
-    if (this.inlineEditActive) {
-      this.pendingRefresh = true;
-      return;
-    }
-    this.pendingRefresh = false;
+    if (this.disposed) return;
     this.renderEpoch++;
     await this.registry.forceRefreshAsync();
   }
@@ -298,12 +347,8 @@ export class RemindersModule {
    * Вызывать, когда флаги modal уже сброшены.
    */
   flushRefreshAfterModalClose(): void {
-    this.pendingRefresh = false;
     const run = () => {
-      if (this.inlineEditActive) {
-        this.pendingRefresh = true;
-        return;
-      }
+      if (this.disposed) return;
       if (this.notificationModalOpen || this.pickerModalOpen) return;
       void this.forceRefreshAsync();
     };
@@ -312,20 +357,11 @@ export class RemindersModule {
     window.setTimeout(run, 350);
   }
 
-  /** Завершение inline-правки: снять флаг и при необходимости обновить список. */
-  private endInlineEdit(): void {
-    this.inlineEditActive = false;
-    if (this.pendingRefresh) {
-      this.pendingRefresh = false;
-      void this.forceRefreshAsync();
-    }
-  }
-
   updateState(): void {
     if (this.ctx.plugin.settings.enableReminders) {
-      this.lastCalendarDayKey = getCalendarDayKey();
+      this.lastCalendarDayKey = formatDateKey(new Date());
       this.scheduleMidnightDayCheck();
-      this.startChecker();
+      void this.startChecker();
     } else {
       this.stopMidnightDayCheck();
       this.stopChecker();
@@ -333,11 +369,30 @@ export class RemindersModule {
     this.registry.runRefresh();
   }
 
+  /**
+   * Напоминания в data.json изменились не через этот модуль (блокнот, дедлайн задачи, синхронизация):
+   * перечитать индекс, перерисовать блоки и перепланировать ближайшее уведомление.
+   */
+  async afterExternalDataChange(): Promise<void> {
+    await this.ctx.remindersIndex.refreshDataJson();
+    await this.forceRefreshAsync();
+    if (this.ctx.plugin.settings.enableReminders) await this.startChecker();
+  }
+
+  /** Добавить напоминание в data.json (строка из buildReminderLine) и сразу показать его. */
+  async addReminderToData(line: string): Promise<void> {
+    await updateDataFile(this.ctx.plugin, (d) => {
+      d.reminders = [...(d.reminders ?? []), line];
+    });
+    await this.afterExternalDataChange();
+  }
+
   unload(): void {
+    this.disposed = true;
     this.stopChecker();
     this.stopMidnightDayCheck();
-    for (const t of this.recurDebounceByPath.values()) clearTimeout(t);
-    this.recurDebounceByPath.clear();
+    for (const t of this.fileChangeTimers.values()) clearTimeout(t);
+    this.fileChangeTimers.clear();
     this.registry.clear();
   }
 
@@ -354,22 +409,56 @@ export class RemindersModule {
     }
   }
 
-  /** Таймер до ближайшего напоминания; при отсутствии — повтор через FALLBACK_CHECK_MS. */
+  /** Таймер до ближайшего напоминания; при отсутствии - повтор через FALLBACK_CHECK_MS. */
   private async scheduleNextReminderCheck(): Promise<void> {
-    if (!this.ctx.plugin.settings.enableReminders) return;
+    if (this.disposed || !this.ctx.plugin.settings.enableReminders) return;
     await this.ctx.remindersIndex.waitReady();
+    if (this.disposed) return;
     let ms = this.ctx.remindersIndex.getNextTriggerMs();
-    // Пока открыто наше уведомление — не крутить проверку каждую секунду (следующее откроет onClose)
-    if (ms != null && ms <= 1000 && this.isReminderUiBlocking()) {
-      ms = FALLBACK_CHECK_MS;
+    if (ms != null && ms <= 1000) {
+      if (this.isReminderUiBlocking()) {
+        // Пока открыто наше уведомление - не крутить проверку каждую секунду (следующее откроет onClose)
+        ms = FALLBACK_CHECK_MS;
+      } else {
+        // Все наступившие напоминания замолчали после неудачного действия - ждём конца ближайшего молчания
+        // или срока следующего напоминания, что раньше
+        const delay = this.delayWhileDueItemsMuted();
+        if (delay != null) ms = delay;
+      }
     }
+    // startChecker могли вызвать параллельно (таймер, смена дня, настройки): держим ровно один таймер
+    this.stopChecker();
     this.nextCheckTimeoutId = setTimeout(
       () => {
         this.nextCheckTimeoutId = null;
-        this.startChecker();
+        void this.startChecker();
       },
-      ms != null ? Math.max(1000, ms) : FALLBACK_CHECK_MS
+      ms != null ? Math.min(MAX_CHECK_DELAY_MS, Math.max(1000, ms)) : FALLBACK_CHECK_MS
     );
+  }
+
+  /**
+   * Если каждое напоминание, срок которого уже наступил, сейчас замолчало - через сколько мс проверять снова:
+   * конец ближайшего молчания или срок ближайшего ещё не наступившего напоминания, что раньше.
+   * null - есть наступившее незамолчавшее напоминание (или наступивших нет): проверять как обычно.
+   */
+  private delayWhileDueItemsMuted(): number | null {
+    const data = this.ctx.remindersIndex.getReminderData();
+    const now = Date.now();
+    let nearestMute: number | null = null;
+    let nextTrigger: number | null = null;
+    for (const item of [...data.overdue, ...data.today, ...data.tomorrow, ...data.upcoming]) {
+      const trigger = this.getTriggerTime(item).getTime();
+      if (trigger > now) {
+        nextTrigger = nextTrigger == null ? trigger - now : Math.min(nextTrigger, trigger - now);
+        continue;
+      }
+      const until = this.mutedUntil.get(this.itemKey(item));
+      if (until == null || until <= now) return null;
+      nearestMute = nearestMute == null ? until - now : Math.min(nearestMute, until - now);
+    }
+    if (nearestMute == null) return null;
+    return nextTrigger == null ? nearestMute : Math.min(nearestMute, nextTrigger);
   }
 
   /** Блокируем новое уведомление, пока открыто наше окно напоминания. */
@@ -386,7 +475,7 @@ export class RemindersModule {
       );
       if (!ours && !this.isReminderUiBlocking()) return;
       if (!ours) {
-        // DOM уже чист — сбрасываем залипшие флаги
+        // DOM уже чист - сбрасываем залипшие флаги
         this.notificationModalOpen = false;
         this.pickerModalOpen = false;
         return;
@@ -398,11 +487,11 @@ export class RemindersModule {
   }
 
   /**
-   * После закрытия уведомления/пикера — сразу проверить следующее due/просроченное.
+   * После закрытия уведомления/пикера - сразу проверить следующее due/просроченное.
    * Ждём исчезновения modal из DOM: иначе проверка натыкается на ещё открытый .modal и выходит.
    */
   scheduleCheckAfterNotification(): void {
-    if (!this.ctx.plugin.settings.enableReminders) return;
+    if (this.disposed || !this.ctx.plugin.settings.enableReminders) return;
     this.stopChecker();
     this.nextCheckTimeoutId = setTimeout(() => {
       this.nextCheckTimeoutId = null;
@@ -413,7 +502,7 @@ export class RemindersModule {
     }, 100);
   }
 
-  /** Время срабатывания: если нет времени в задаче — 10:00 в день срока. */
+  /** Время срабатывания: если нет времени в задаче - 10:00 в день срока. */
   private getTriggerTime(item: ReminderItem): Date {
     if (item.displayTime) return item.date;
     const d = new Date(item.date);
@@ -422,18 +511,21 @@ export class RemindersModule {
   }
 
   private async runReminderCheck(): Promise<void> {
-    if (!this.ctx.plugin.settings.enableReminders) return;
-    // Только наши окна — не любой .modal.modal-open (часто ещё висит при закрытии / у других плагинов)
+    if (this.disposed || !this.ctx.plugin.settings.enableReminders) return;
+    // Только наши окна - не любой .modal.modal-open (часто ещё висит при закрытии / у других плагинов)
     if (this.isReminderUiBlocking()) return;
     if (document.querySelector(".opa-reminder-notification-modal, .opa-reminder-picker-modal")) return;
     try {
       await this.ctx.remindersIndex.waitReady();
+      // Плагин могли перезагрузить, пока строился индекс: окно от выгруженного экземпляра не открываем
+      if (this.disposed) return;
       const data = this.ctx.remindersIndex.getReminderData();
       const candidates = [...data.overdue, ...data.today].sort(
         (a, b) => a.date.getTime() - b.date.getTime()
       );
       const now = new Date();
       for (const item of candidates) {
+        if (this.isMuted(item, now.getTime())) continue;
         const trigger = this.getTriggerTime(item);
         if (now.getTime() >= trigger.getTime()) {
           this.openNotificationModal(item);
@@ -443,6 +535,29 @@ export class RemindersModule {
     } catch (e) {
       console.error("[Reminders] check error:", e);
     }
+  }
+
+  private itemKey(item: ReminderItem): string {
+    return `${item.filePath}\n${item.lineText}`;
+  }
+
+  /** Действие из уведомления не удалось: не открывать то же напоминание снова какое-то время. */
+  muteItemAfterFailure(item: ReminderItem): void {
+    this.mutedUntil.set(this.itemKey(item), Date.now() + MUTE_AFTER_FAILURE_MS);
+    // Скорее всего строка в файле изменилась - перечитать её, чтобы следующий показ был с актуальным текстом
+    const file = this.ctx.app.vault.getAbstractFileByPath(item.filePath);
+    if (file instanceof TFile) this.verifyIndexSoon(file);
+  }
+
+  private isMuted(item: ReminderItem, nowMs: number): boolean {
+    const key = this.itemKey(item);
+    const until = this.mutedUntil.get(key);
+    if (until == null) return false;
+    if (nowMs >= until) {
+      this.mutedUntil.delete(key);
+      return false;
+    }
+    return true;
   }
 
   private getDataPath(): string {
@@ -475,34 +590,44 @@ export class RemindersModule {
         this.contentEl.createEl("div", { cls: "opa-reminder-notif-due", text: `Срок: ${timeStr}` });
         const btnContainer = this.contentEl.createEl("div", { cls: "opa-reminder-notif-btns" });
 
-        const addBtn = (label: string, fn: () => void | Promise<void>, primary = false) => {
+        /**
+         * fn возвращает true, если действие с напоминанием удалось. Иначе (строка в файле уже другая)
+         * напоминание на время замолкает - окно не должно открываться заново каждую секунду.
+         */
+        const addBtn = (label: string, fn: () => Promise<boolean>, primary = false) => {
           const btn = btnContainer.createEl("button", { text: label, cls: primary ? "opa-reminder-notif-btn opa-reminder-notif-btn-primary" : "opa-reminder-notif-btn" });
           btn.addEventListener("click", async () => {
+            let ok = false;
             try {
-              await fn();
-              this.close();
+              ok = await fn();
             } catch (e) {
+              console.error("[Reminders] notification action failed:", e);
               new Notice(e instanceof Error ? e.message : "Ошибка");
             }
+            if (!ok) this.remindersRef.muteItemAfterFailure(item);
+            this.close();
           });
         };
 
         addBtn(snooze.doneBtn, async () => {
-          await this.remindersRef.completeReminder(item);
-          new Notice(snooze.done);
+          const ok = await this.remindersRef.completeReminder(item);
+          if (ok) new Notice(snooze.done);
+          return ok;
         }, true);
         addBtn(snooze.oneHourBtn, async () => {
           const ok = await this.remindersRef.snoozeReminder(item, 60);
           if (ok) new Notice(snooze.oneHour);
+          return ok;
         });
         addBtn(snooze.tomorrowBtn, async () => {
           const ok = await this.remindersRef.snoozeReminder(item, 1440);
           if (ok) new Notice(snooze.tomorrow);
+          return ok;
         });
         addBtn(snooze.pickDateBtn, async () => {
           const ref = this.remindersRef;
           const remItem = item;
-          // Сначала флаг пикера, потом close — иначе onClose уведомления сразу откроет следующее
+          // Сначала флаг пикера, потом close - иначе onClose уведомления сразу откроет следующее
           ref.pickerModalOpen = true;
           this.close();
           class PickerModal extends Modal {
@@ -524,6 +649,8 @@ export class RemindersModule {
                   void ref.setReminderDate(remItem, val).then((ok) => {
                     if (ok) {
                       new Notice(snooze.rescheduled(new Date(val).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })));
+                    } else {
+                      ref.muteItemAfterFailure(remItem);
                     }
                   });
                 }
@@ -543,11 +670,12 @@ export class RemindersModule {
             }
           }
           new PickerModal(app).open();
+          return true;
         });
       }
       onClose() {
         this.remindersRef.notificationModalOpen = false;
-        // Следующее просроченное/due — сразу после действия с текущим
+        // Следующее просроченное/due - сразу после действия с текущим
         if (!this.remindersRef.pickerModalOpen) {
           this.remindersRef.flushRefreshAfterModalClose();
           this.remindersRef.scheduleCheckAfterNotification();
@@ -568,29 +696,64 @@ export class RemindersModule {
     return this.rescheduleReminder(item, new Date(dateIso));
   }
 
-  /** Найти строку напоминания в файле (точный матч, затем includes). */
+  /** Найти строку: точный матч, затем только однозначный нечёткий матч. */
   private findReminderLineIndex(lines: string[], lineText: string): number {
-    let idx = findLineIndexByText(lines, lineText, { exact: true });
-    if (idx !== -1) return idx;
-    idx = findLineIndexByText(lines, lineText);
-    if (idx !== -1) return idx;
-    // Fallback: unchecked-строка с тем же тегом даты
-    const tag = lineText.match(REMINDER_DATE_TAG_REGEX)?.[0];
-    if (!tag) return -1;
-    const bare = lineText
-      .replace(/^\s*[-*]\s+\[[ xX]\]\s*/i, "")
-      .replace(REMINDER_DATE_TAG_REGEX, "")
-      .trim();
-    return lines.findIndex((line) => {
-      const t = line.trim();
-      if (!t.startsWith("- [ ]") && !t.startsWith("* [ ]")) return false;
-      if (!t.includes(tag)) return false;
-      const otherBare = t
-        .replace(/^\s*[-*]\s+\[[ xX]\]\s*/i, "")
-        .replace(REMINDER_DATE_TAG_REGEX, "")
-        .trim();
-      return otherBare === bare;
+    return findUniqueLineIndexByText(lines, lineText);
+  }
+
+  /** Начислить награды по намерениям (id уже начисленных пропускаются) и запомнить их id. */
+  private async persistMarkdownRewards(intents: ReminderRewardIntent[]): Promise<void> {
+    if (intents.length === 0) return;
+    await updateDataFile(this.ctx.plugin, (d) => {
+      const ids = new Set(d.reminderRewardIds ?? []);
+      const state = d.gamification ?? emptyGamificationState();
+      for (const intent of intents) {
+        if (ids.has(intent.id)) continue;
+        applyReminderRewardIntent(state, intent);
+        ids.add(intent.id);
+      }
+      d.gamification = state;
+      // Маркеры убираются из заметок сразу после начисления, поэтому хранить все id навсегда не нужно
+      d.reminderRewardIds = [...ids].slice(-MAX_REWARD_IDS);
     });
+  }
+
+  /**
+   * Доначислить награды по маркерам-намерениям в заметке и убрать маркеры из текста.
+   * content - уже прочитанное содержимое (иначе файл читается). true - награды были.
+   */
+  private async recoverRewardsInFile(file: TFile, content?: string): Promise<boolean> {
+    const text = content ?? (await this.ctx.app.vault.read(file));
+    const intents = rewardIntentsFromText(text);
+    if (intents.length === 0) return false;
+    await this.persistMarkdownRewards(intents);
+    await this.writeOwnChange(file, stripRewardMarkers);
+    return true;
+  }
+
+  /** Состояние геймификации изменилось в data.json - перечитать кэш и перерисовать блоки прогресса. */
+  private async refreshGamificationBlocks(): Promise<void> {
+    await this.ctx.plugin.refreshGamificationState();
+    this.ctx.plugin.gamification?.updateState?.();
+  }
+
+  /**
+   * При запуске: награды, маркеры которых остались в заметках после прерванного выполнения.
+   * Файлы с маркерами известны индексу напоминаний - повторный обход хранилища не нужен.
+   */
+  private async recoverPendingRewardsOnStartup(): Promise<void> {
+    // Индекс строится и при выключенных напоминаниях, поэтому маркер после сбоя доначисляется в любом случае
+    if (!this.ctx.plugin.settings.enableGamification) return;
+    await this.ctx.remindersIndex.waitReady();
+    if (this.disposed) return;
+    let applied = false;
+    for (const path of this.ctx.remindersIndex.getFilesWithRewardMarkers()) {
+      if (this.disposed) return;
+      const file = this.ctx.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) continue;
+      if (await this.recoverRewardsInFile(file)) applied = true;
+    }
+    if (applied && !this.disposed) await this.refreshGamificationBlocks();
   }
 
   /** Перенести напоминание на новую дату (в data.json или в заметке). */
@@ -613,36 +776,25 @@ export class RemindersModule {
         new Notice(UI_LABELS.reminders.notices.completeNotFound);
         return false;
       }
-      this.ctx.remindersIndex.suppressVaultModify(this.getDataPath());
       await this.ctx.remindersIndex.refreshDataJson();
       await this.refreshUiAfterMutation();
       return true;
     }
 
     const file = this.ctx.app.vault.getAbstractFileByPath(item.filePath);
-    if (!file || !(file instanceof TFile)) {
+    if (!(file instanceof TFile)) {
       new Notice(`Файл не найден: ${item.filePath}`);
       return false;
     }
 
-    const ok = await this.withSuppressedRecur(file.path, async () => {
-      const content = await this.ctx.app.vault.read(file);
+    const written = await this.writeOwnChange(file, (content) => {
       const lines = content.split("\n");
       const lineIdx = this.findReminderLineIndex(lines, item.lineText);
-      if (lineIdx === -1) return false;
-      const oldLine = lines[lineIdx];
-      const newLine = replaceReminderDateTag(oldLine, newTag);
-      if (newLine === oldLine) return false;
-      lines[lineIdx] = newLine;
-      const written = lines.join("\n");
-      // Глушим modify→updateFile: иначе кэш сразу после modify отдаёт старые даты и затирает индекс
-      this.ctx.remindersIndex.suppressVaultModify(file.path);
-      await this.ctx.app.vault.modify(file, written);
-      await this.ctx.remindersIndex.updateFile(file, written);
-      return true;
+      if (lineIdx === -1) return content;
+      lines[lineIdx] = replaceReminderDateTag(lines[lineIdx], newTag);
+      return lines.join("\n");
     });
-
-    if (!ok) {
+    if (written == null) {
       new Notice(UI_LABELS.reminders.notices.completeNotFound);
       return false;
     }
@@ -651,7 +803,8 @@ export class RemindersModule {
     return true;
   }
 
-  private async render(container: HTMLElement): Promise<void> {
+  /** force=false - фоновое обновление: при неизменившихся данных (и той же минуте) DOM не трогаем. */
+  private async render(container: HTMLElement, force = true): Promise<void> {
     const epoch = this.renderEpoch;
 
     if (!this.ctx.plugin.settings.enableReminders) {
@@ -670,18 +823,20 @@ export class RemindersModule {
       await this.ctx.remindersIndex.waitReady();
       if (epoch !== this.renderEpoch) return;
 
-      // Пока пользователь правит строку — не трогаем DOM (иначе выкидывает из инпута).
-      if (this.inlineEditActive) {
-        this.pendingRefresh = true;
-        return;
-      }
-
-      // Данные после await — иначе гонка с более новым render затрёт актуальные даты.
+      // Данные после await - иначе гонка с более новым render затрёт актуальные даты.
       const data = this.getReminderData();
       if (epoch !== this.renderEpoch) return;
 
+      // От времени зависят секция каждого напоминания (в data: type) и подпись «через N дн.» - они и входят
+      // в подпись. Сама текущая минута в подпись не входит: иначе фоновое обновление на границе минуты
+      // пересобирало бы DOM и стирало набранный в поле ввода текст.
+      const active = [...data.overdue, ...data.today, ...data.tomorrow, ...data.upcoming];
+      const signature = renderSignature("reminders", data, active.map((item) => fromNow(item.date)));
+      if (!force && isRenderUnchanged(container, signature)) return;
+
       container.empty();
-      const body = createCollapsibleSection(container, "Напоминания", "reminders");
+      markRendered(container, signature);
+      const body = createCollapsibleSection(container, UI_LABELS.blockTitles.reminders, "reminders");
 
       const formWrap = body.createEl("div", { cls: "view-add-form" });
       const input = formWrap.createEl("input", {
@@ -691,23 +846,21 @@ export class RemindersModule {
       });
       const addBtn = formWrap.createEl("button", { text: common.add, cls: "view-btn" });
       addBtn.addEventListener("click", async () => {
-        const text = (input as HTMLInputElement).value.trim();
+        const text = input.value.trim();
         if (!text) return;
         const result = await this.openReminderModal(text);
         if (result) {
-          const dateStr = `${result.date.getDate().toString().padStart(2, "0")}-${(result.date.getMonth() + 1).toString().padStart(2, "0")}-${result.date.getFullYear()} ${result.date.getHours().toString().padStart(2, "0")}:${result.date.getMinutes().toString().padStart(2, "0")}`;
-          const recurTag = result.recurrence ? ` (${result.recurrence})` : "";
-          const line = `- [ ] ${result.text}${recurTag} (@${dateStr})`;
-          await updateDataFile(this.ctx.plugin, (d) => {
-            d.reminders = [...(d.reminders ?? []), line];
-          });
-          await this.ctx.remindersIndex.refreshDataJson();
-          await this.forceRefreshAsync();
-          new Notice(L.notices.addedTo("data.json"));
-          (input as HTMLInputElement).value = "";
-          this.shouldRestoreFocus = true;
+          try {
+            await this.addReminderToData(buildReminderLine(result.text, result.date, result.recurrence));
+            new Notice(L.notices.added);
+            input.value = "";
+            this.shouldRestoreFocus = true;
+          } catch (error) {
+            console.error("[Reminders] add failed:", error);
+            new Notice(L.errorNotice);
+          }
         }
-        setTimeout(() => (input as HTMLInputElement).focus(), 150);
+        setTimeout(() => input.focus(), 150);
       });
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") addBtn.click();
@@ -743,7 +896,10 @@ export class RemindersModule {
           checkbox.checked = false;
           checkbox.addEventListener("click", (e) => {
             e.stopPropagation();
-            this.completeReminder(item);
+            void this.completeReminder(item).catch((error) => {
+              console.error("[Reminders] complete failed:", error);
+              new Notice(L.errorNotice);
+            });
           });
 
           const content = contentWrap.createEl("div", { cls: "rv-content" });
@@ -768,12 +924,15 @@ export class RemindersModule {
           const editBtn = actions.createEl("button", { text: L.edit, cls: "inbox-action-btn" });
           editBtn.addEventListener("click", (e) => {
             e.stopPropagation();
-            this.startInlineEdit(row, item);
+            void this.editReminderFromBlock(item);
           });
           const deleteBtn = actions.createEl("button", { text: L.delete, cls: "inbox-action-btn" });
           deleteBtn.addEventListener("click", (e) => {
             e.stopPropagation();
-            this.deleteReminder(item);
+            void this.deleteReminder(item).catch((error) => {
+              console.error("[Reminders] delete failed:", error);
+              new Notice(L.errorNotice);
+            });
           });
 
           row.appendChild(timeDiv);
@@ -819,7 +978,10 @@ export class RemindersModule {
           const deleteBtn = actions.createEl("button", { text: L.delete, cls: "inbox-action-btn" });
           deleteBtn.addEventListener("click", (e) => {
             e.stopPropagation();
-            this.deleteReminder(item);
+            void this.deleteReminder(item).catch((error) => {
+              console.error("[Reminders] delete failed:", error);
+              new Notice(L.errorNotice);
+            });
           });
           row.appendChild(timeDiv);
           row.appendChild(actions);
@@ -853,74 +1015,44 @@ export class RemindersModule {
         }, 150);
       }
     } catch (e) {
+      if (epoch !== this.renderEpoch) return;
       container.empty();
       container.createEl("p", { text: L.errorNotice ?? "Ошибка напоминаний", cls: "view-error" });
       console.error(e);
     }
   }
 
-  private startInlineEdit(rowEl: HTMLElement, item: ReminderItem): void {
-    const contentEl = rowEl.querySelector(".rv-content");
-    if (!contentEl) return;
-    // Уже идёт правка другой строки — не открываем вторую поверх
-    if (this.inlineEditActive) return;
-
-    this.inlineEditActive = true;
-    rowEl.addClass("is-editing");
-
-    const taskPrefix = item.lineText.match(/^\s*[-*]\s+\[.\]\s*/i)?.[0] ?? "- [ ] ";
-    const displayValue = item.lineText.replace(/^\s*[-*]\s+\[.\]\s*/i, "").trim();
-    const editInput = contentEl.createEl("input", { type: "text", cls: "view-input rv-edit-input" });
-    editInput.value = displayValue;
-    contentEl.insertBefore(editInput, contentEl.children[1]);
-    editInput.focus();
-
-    let closed = false;
-    const cancel = () => {
-      if (closed) return;
-      closed = true;
-      editInput.remove();
-      rowEl.removeClass("is-editing");
-      this.endInlineEdit();
-    };
-
-    const save = async () => {
-      if (closed) return;
-      const newValue = editInput.value.trim();
-      const fullLine = taskPrefix + newValue;
-      let needRefresh = false;
-      if (newValue && fullLine !== item.lineText) {
-        const ok = await this.editReminder(item, fullLine);
-        needRefresh = ok;
-      }
-      // Сначала закрываем правку, потом рефреш — иначе рендер сотрёт соседний инпут
-      closed = true;
-      editInput.remove();
-      rowEl.removeClass("is-editing");
-      this.inlineEditActive = false;
-      if (needRefresh || this.pendingRefresh) {
-        this.pendingRefresh = false;
-        await this.forceRefreshAsync();
-      }
-    };
-
-    editInput.addEventListener("keydown", async (e: KeyboardEvent) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        await save();
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        cancel();
-      }
+  /**
+   * «Изменить» в блоке: окно напоминания с текущими текстом, сроком и повторением. В строку записывается
+   * только изменённое в окне, остальное в строке остаётся как было; «Отмена», Esc и «Сохранить» без изменений
+   * ничего не пишут.
+   */
+  async editReminderFromBlock(item: ReminderItem): Promise<void> {
+    if (this.reminderSettingsModalOpen) return;
+    const L = UI_LABELS.reminders;
+    const initial = reminderEditFields(item.lineText);
+    if (!initial) return;
+    const result = await this.openReminderModal(initial.text, {
+      title: L.modal.editTitle,
+      date: initial.date,
+      recurrence: initial.recurrence,
     });
-    editInput.addEventListener("blur", () => {
-      if (editInput.parentElement) void save();
-    });
+    if (!result) return;
+    const changes = reminderEditChanges(initial, result);
+    if (Object.keys(changes).length === 0) return;
+    try {
+      new Notice((await this.editReminder(item, changes)) ? L.notices.updated : L.notices.editNotFound);
+    } catch (error) {
+      console.error("[Reminders] edit failed:", error);
+      new Notice(L.errorNotice);
+    }
+    await this.forceRefreshAsync();
+    // Срок мог измениться: таймер уведомлений заводится заново по актуальным данным
+    this.scheduleCheckAfterNotification();
   }
 
   /**
-   * Отметить строку выполненной; для повторяющихся — вставить следующее вхождение сразу под ней.
+   * Отметить строку выполненной; для повторяющихся - вставить следующее вхождение сразу под ней.
    * Возвращает найденную повторяемость (если была) или null; lines мутируется.
    */
   private completeLineInPlace(
@@ -931,14 +1063,38 @@ export class RemindersModule {
     lines[lineIdx] = completedLine;
     const parsed = parseCompletedTaskWithRecurrence(completedLine);
     if (!parsed) return null;
+    const due = parseReminderDueFromText(completedLine);
+    const nextLine = due ? buildNextRecurrenceLine(parsed, due.date) : null;
+    if (!nextLine) return null;
     lines[lineIdx] = completedLineWithoutRecurrence(completedLine, parsed.recurrenceFull);
-    lines.splice(lineIdx + 1, 0, buildNextRecurrenceLine(parsed));
+    lines.splice(lineIdx + 1, 0, nextLine);
     return { amount: parsed.amount, unit: parsed.unit };
   }
 
-  private async completeReminder(item: ReminderItem): Promise<void> {
-    let completed = false;
+  /** Награда за выполнение напоминания сейчас: XP/Gold из настроек, для повторяющихся - стрик по тексту. */
+  private buildRewardIntent(item: ReminderItem): ReminderRewardIntent {
+    const { settings } = this.ctx.plugin;
+    const reward = settings.gamificationReminderRewards;
+    const recurrence = item.isRecurring ? parseRecurrenceFromText(item.lineText) : null;
+    const graceMs = settings.gamificationStreakGraceDays * 24 * 60 * 60 * 1000;
+    const streak = recurrence
+      ? {
+          key: item.text.trim() || "reminder",
+          onTime: isRecurrenceCompletionOnTime(item.date, new Date(), recurrence.amount, recurrence.unit, graceMs),
+        }
+      : undefined;
+    return createReminderRewardIntent(reward.xp, reward.gold, streak);
+  }
+
+  /**
+   * Отметить напоминание выполненным из блока. Для повторяющихся вставляется следующее вхождение.
+   * Награда: в data.json начисляется той же записью; в заметке - через маркер-намерение (ReminderRewards).
+   * false - строка не найдена (файл изменился с момента отрисовки).
+   */
+  private async completeReminder(item: ReminderItem): Promise<boolean> {
+    const rewardIntent = this.ctx.plugin.settings.enableGamification ? this.buildRewardIntent(item) : null;
     let recurrence: { amount: number; unit: string } | null = null;
+    let completed = false;
 
     if (item.filePath === this.getDataPath()) {
       await updateDataFile(this.ctx.plugin, (d) => {
@@ -948,64 +1104,59 @@ export class RemindersModule {
         completed = true;
         recurrence = this.completeLineInPlace(reminders, idx);
         d.reminders = reminders;
+        if (rewardIntent) {
+          const state = d.gamification ?? emptyGamificationState();
+          applyReminderRewardIntent(state, rewardIntent);
+          d.gamification = state;
+        }
       });
       if (completed) await this.ctx.remindersIndex.refreshDataJson();
     } else {
       const file = this.ctx.app.vault.getAbstractFileByPath(item.filePath);
-      if (!file || !(file instanceof TFile)) return;
-      let written: string | null = null;
-      this.ctx.remindersIndex.suppressVaultModify(file.path);
-      await this.withSuppressedRecur(file.path, async () => {
-        await processFile(this.ctx.app, file, (content) => {
-          const lines = content.split("\n");
-          const lineIdx = findLineIndexByText(lines, item.lineText);
-          if (lineIdx === -1) return content;
-          completed = true;
-          recurrence = this.completeLineInPlace(lines, lineIdx);
-          written = lines.join("\n");
-          return written;
-        });
+      if (!(file instanceof TFile)) {
+        new Notice(UI_LABELS.reminders.notices.completeNotFound);
+        return false;
+      }
+      const written = await this.writeOwnChange(file, (content) => {
+        const lines = content.split("\n");
+        const lineIdx = this.findReminderLineIndex(lines, item.lineText);
+        if (lineIdx === -1) return content;
+        recurrence = this.completeLineInPlace(lines, lineIdx);
+        if (rewardIntent) lines[lineIdx] += ` ${rewardMarker(rewardIntent)}`;
+        return lines.join("\n");
       });
+      completed = written != null;
       if (completed) {
-        if (written != null) await this.ctx.remindersIndex.updateFile(file, written);
-        else await this.ctx.remindersIndex.updateFile(file);
         this.verifyIndexSoon(file);
+        // Маркер уже в файле: начислить награду в data.json и убрать маркер
+        if (rewardIntent) await this.recoverRewardsInFile(file, written ?? undefined);
       }
     }
 
     if (!completed) {
       new Notice(UI_LABELS.reminders.notices.completeNotFound);
-      return;
+      return false;
     }
     if (recurrence) {
       const { amount, unit } = recurrence;
       new Notice(UI_LABELS.reminders.notices.nextCreated(amount, unit));
     }
-
-    if (this.ctx.plugin.settings.enableGamification) {
-      const state = await this.ctx.plugin.getGamificationState();
-      const r = this.ctx.plugin.settings.gamificationReminderRewards ?? DEFAULT_REMINDER_REWARDS;
-      state.xp += r.xp;
-      state.gold += r.gold;
-      if (item.isRecurring) {
-        const streakKey = item.text.trim() || "reminder";
-        const rec = recurrence ?? parseRecurrenceFromText(item.lineText);
-        const graceMs = (this.ctx.plugin.settings.gamificationStreakGraceDays ?? 0) * 24 * 60 * 60 * 1000;
-        const onTime =
-          rec != null &&
-          isRecurrenceCompletionOnTime(item.date, new Date(), rec.amount, rec.unit, graceMs);
-        state.streaks[streakKey] = onTime ? (state.streaks[streakKey] ?? 0) + 1 : 1;
-      }
-      this.ctx.plugin.scheduleGamificationSave();
-      this.ctx.plugin.gamification?.updateState?.();
-      new Notice(`${UI_LABELS.reminders.notices.completed} ${UI_LABELS.gamification.rewardLine(r.xp, r.gold)}`);
+    if (rewardIntent) {
+      await this.refreshGamificationBlocks();
+      new Notice(`${UI_LABELS.reminders.notices.completed} ${UI_LABELS.gamification.rewardLine(rewardIntent.xp, rewardIntent.gold)}`);
     } else {
       new Notice(UI_LABELS.reminders.notices.completed);
     }
     await this.refreshUiAfterMutation();
+    return true;
   }
 
-  private async editReminder(item: ReminderItem, newLineText: string): Promise<boolean> {
+  /**
+   * Записать правку из окна «Изменить»: в строке меняется только изменённое в окне (applyReminderEdit),
+   * отступ вложенного напоминания и остальное в строке остаются. Строка ищется как при выполнении и переносе.
+   * false - строка не найдена (её изменили или удалили, пока было открыто окно).
+   */
+  private async editReminder(item: ReminderItem, changes: ReminderEditChanges): Promise<boolean> {
     if (item.filePath === this.getDataPath()) {
       let updated = false;
       await updateDataFile(this.ctx.plugin, (d) => {
@@ -1014,27 +1165,26 @@ export class RemindersModule {
         if (idx === -1) return;
         updated = true;
         const next = [...reminders];
-        next[idx] = newLineText.trim();
+        next[idx] = applyReminderEdit(reminders[idx], changes).trim();
         d.reminders = next;
       });
       if (!updated) return false;
       await this.ctx.remindersIndex.refreshDataJson();
-      new Notice(UI_LABELS.reminders.notices.updated);
       return true;
     }
     const file = this.ctx.app.vault.getAbstractFileByPath(item.filePath);
-    if (!file || !(file instanceof TFile)) return false;
-    const content = await this.ctx.app.vault.read(file);
-    if (!content) return false;
-    const newContent = replaceLineByText(content, item.lineText, newLineText.trim());
-    if (newContent === content) return false;
-    this.ctx.remindersIndex.suppressVaultModify(file.path);
-    await this.withSuppressedRecur(file.path, async () => {
-      await this.ctx.app.vault.modify(file, newContent);
+    if (!(file instanceof TFile)) return false;
+    let found = false;
+    await this.writeOwnChange(file, (content) => {
+      const lines = content.split("\n");
+      const idx = this.findReminderLineIndex(lines, item.lineText);
+      if (idx === -1) return content;
+      found = true;
+      lines[idx] = applyReminderEdit(lines[idx], changes);
+      return lines.join("\n");
     });
-    await this.ctx.remindersIndex.updateFile(file, newContent);
-    new Notice(UI_LABELS.reminders.notices.updated);
-    return true;
+    if (found) this.verifyIndexSoon(file);
+    return found;
   }
 
   private async deleteReminder(item: ReminderItem): Promise<void> {
@@ -1055,31 +1205,49 @@ export class RemindersModule {
       await this.ctx.remindersIndex.refreshDataJson();
     } else {
       const file = this.ctx.app.vault.getAbstractFileByPath(item.filePath);
-      if (!file || !(file instanceof TFile)) return;
-      const content = await read(this.ctx.app, item.filePath);
-      if (!content) return;
-      const lines = content.split("\n");
-      const idx = findLineIndexByText(lines, item.lineText);
-      if (idx === -1) {
+      if (!(file instanceof TFile)) {
         new Notice(UI_LABELS.reminders.notices.deleteNotFound);
         return;
       }
-      const { content: newContent, removedLine } = deleteLineAtIndex(content, idx);
-      // Сначала кладём строку в корзину, потом удаляем из заметки — при сбое ничего не теряется
-      if (removedLine) {
-        await updateDataFile(this.ctx.plugin, (d) => {
-          d.trash = [...(d.trash ?? []), removedLine];
-        });
+      let removedLine: string | null = null;
+      let removedIndex = -1;
+      const written = await this.writeOwnChange(file, (content) => {
+        const lines = content.split("\n");
+        removedIndex = this.findReminderLineIndex(lines, item.lineText);
+        if (removedIndex === -1) return content;
+        removedLine = lines[removedIndex];
+        lines.splice(removedIndex, 1);
+        return lines.join("\n");
+      });
+      if (removedLine == null || written == null) {
+        new Notice(UI_LABELS.reminders.notices.deleteNotFound);
+        return;
       }
-      await modify(this.ctx.app, item.filePath, newContent);
-      await this.ctx.remindersIndex.updateFile(file, newContent);
+      const lineToTrash: string = removedLine;
+      try {
+        await updateDataFile(this.ctx.plugin, (d) => {
+          d.trash = [...(d.trash ?? []), lineToTrash];
+        });
+      } catch (error) {
+        // Корзина не записалась - вернуть строку в заметку, чтобы напоминание не пропало
+        await this.writeOwnChange(file, (content) => {
+          const lines = content.split("\n");
+          lines.splice(Math.min(removedIndex, lines.length), 0, lineToTrash);
+          return lines.join("\n");
+        });
+        throw error;
+      }
     }
     new Notice(UI_LABELS.reminders.notices.movedToTrash);
     this.ctx.plugin.triggerTrashRefresh?.();
     await this.forceRefreshAsync();
   }
 
-  public openReminderModal(defaultText: string): Promise<{ text: string; date: Date; recurrence: string } | null> {
+  /** Окно напоминания: новое (текст из defaultText, срок через час) или «Изменить» (options - текущие значения). */
+  public openReminderModal(
+    defaultText: string,
+    options: ReminderModalOptions = {}
+  ): Promise<{ text: string; date: Date; recurrence: string } | null> {
     this.reminderSettingsModalOpen = true;
     return new Promise((resolve) => {
       const app = this.ctx.app;
@@ -1098,19 +1266,18 @@ export class RemindersModule {
         onOpen() {
           this.modalEl.addClass("opa-reminder-settings-modal");
           this.contentEl.empty();
-          this.contentEl.createEl("h2", { text: mod.title });
+          this.contentEl.createEl("h2", { text: options.title ?? mod.title });
           this.contentEl.createEl("div", { text: mod.textLabel, cls: "setting-item-description" });
           const textInput = this.contentEl.createEl("input", { type: "text", cls: "view-input opa-reminder-modal-input" });
           textInput.value = defaultText;
           this.contentEl.createEl("div", { text: mod.dateLabel, cls: "setting-item-description" });
           const dateInput = this.contentEl.createEl("input", { type: "datetime-local", cls: "view-input opa-reminder-modal-input" });
-          const defaultDate = new Date();
-          defaultDate.setTime(defaultDate.getTime() + 60 * 60 * 1000);
-          dateInput.value = `${defaultDate.getFullYear()}-${(defaultDate.getMonth() + 1).toString().padStart(2, "0")}-${defaultDate.getDate().toString().padStart(2, "0")}T${defaultDate.getHours().toString().padStart(2, "0")}:${defaultDate.getMinutes().toString().padStart(2, "0")}`;
+          // Новое напоминание - через час, при правке - текущий срок
+          dateInput.value = toDateTimeLocalValue(options.date ?? new Date(Date.now() + 60 * 60 * 1000));
           this.contentEl.createEl("div", { text: mod.recurrenceLabel, cls: "setting-item-description" });
           const recurWrap = this.contentEl.createEl("div", { cls: "reminder-modal-recur" });
           const recurAmount = recurWrap.createEl("input", { type: "number", cls: "view-input reminder-modal-recur-amount" });
-          recurAmount.value = "1";
+          recurAmount.value = String(options.recurrence?.amount ?? 1);
           recurAmount.min = "1";
           const recurUnit = recurWrap.createEl("select", { cls: "view-input reminder-modal-recur-unit" });
           [
@@ -1120,6 +1287,7 @@ export class RemindersModule {
             { value: "months", label: mod.months },
             { value: "years", label: mod.years },
           ].forEach((o) => recurUnit.createEl("option", { value: o.value, text: o.label }));
+          recurUnit.value = options.recurrence?.unit ?? "";
           const btnWrap = this.contentEl.createEl("div", { cls: "modal-button-container" });
           const cancelBtn = btnWrap.createEl("button", { text: common.cancel, cls: "reminder-modal-cancel" });
           cancelBtn.addEventListener("click", () => {
@@ -1136,7 +1304,14 @@ export class RemindersModule {
               new Notice(mod.fillRequired);
               return;
             }
-            const recurrence = unit ? `every ${amount} ${unit}` : "";
+            const amountNumber = Number(amount);
+            if (unit && (!Number.isSafeInteger(amountNumber) || amountNumber <= 0)) {
+              (recurAmount as HTMLInputElement).setCustomValidity("Введите положительное целое число");
+              (recurAmount as HTMLInputElement).reportValidity();
+              return;
+            }
+            (recurAmount as HTMLInputElement).setCustomValidity("");
+            const recurrence = unit ? `every ${amountNumber} ${unit}` : "";
             doResolve({
               text: text || defaultText,
               date: new Date(dateVal),
@@ -1145,7 +1320,8 @@ export class RemindersModule {
             this.close();
           });
           this.contentEl.addEventListener("keydown", (e: KeyboardEvent) => {
-            if (e.key === "Enter") {
+            // Enter на кнопке - действие самой кнопки: «Отмена» с клавиатуры не должна сохранять
+            if (e.key === "Enter" && (e.target as HTMLElement | null)?.tagName !== "BUTTON") {
               e.preventDefault();
               this.saveBtn.click();
             }

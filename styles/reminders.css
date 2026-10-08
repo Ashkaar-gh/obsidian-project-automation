@@ -1,16 +1,4 @@
 ﻿
-/* Инлайн-редактирование напоминания */
-.rv-item.is-editing .rv-text {
-  display: none;
-}
-.rv-item.is-editing .rv-actions {
-  visibility: hidden;
-}
-.rv-edit-input {
-  width: 100%;
-  margin-bottom: 4px;
-}
-
 /* Модалка уведомления */
 .opa-reminder-notif-title {
   color: var(--interactive-accent);
@@ -39,7 +27,7 @@
   box-sizing: border-box;
 }
 
-/* Модалка создания напоминания */
+/* Модалка напоминания: новое и «Изменить» */
 .opa-reminder-modal-input {
   width: 100%;
   margin-bottom: 15px;

@@ -3,18 +3,10 @@
     --g-xp-fill: var(--interactive-accent);
     padding: 0.75rem 0;
 }
-.gamification-level {
+.opa-gamification-level {
     font-size: 1.1rem;
     font-weight: 600;
     margin-bottom: 0.5rem;
-}
-.gamification-level-value {
-    color: var(--interactive-accent);
-}
-.gamification-rank {
-    margin-left: 0.35em;
-    color: var(--text-muted);
-    font-weight: 500;
 }
 .gamification-xp-wrap {
     height: 12px;
@@ -38,35 +30,20 @@
     font-size: 1rem;
     margin-bottom: 0.35rem;
 }
-.gamification-streaks-wrap {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 10px;
-    margin-bottom: 5px;
-}
-.gamification-streak-badge {
-    background: rgba(var(--interactive-accent-rgb), 0.15);
-    border: 1px solid rgba(var(--interactive-accent-rgb), 0.3);
-    color: var(--text-normal);
-    padding: 3px 10px;
-    border-radius: 12px;
-    font-size: 0.85em;
-    font-weight: 500;
-}
 .gamification-buttons-row {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
     margin-top: 0.5rem;
 }
-.view-modal.gamification-completed-modal,
 .modal.gamification-completed-modal {
     min-width: 640px;
     width: min(780px, 94vw);
 }
-.opa-gamification-modal .modal-close-button,
-.gamification-levelup-modal .modal-close-button {
+.is-mobile .modal.gamification-completed-modal {
+    min-width: 0;
+}
+.opa-gamification-modal .modal-close-button {
     display: none;
 }
 .gamification-completed-modal .gamification-completed-content {
@@ -75,15 +52,6 @@
     gap: 0.5rem;
     min-width: 0;
     overflow-x: auto;
-}
-.gamification-completed-section-title {
-    font-size: 0.95rem;
-    font-weight: 600;
-    color: var(--text-muted);
-    margin: 0 0 0.35rem 0;
-}
-.gamification-completed-modal .gamification-streaks-wrap {
-    margin-top: 0.25rem;
 }
 .gamification-completed-tasks {
     display: flex;
@@ -139,10 +107,6 @@
     align-items: center;
     gap: 0.25rem;
 }
-.gamification-month-label {
-    font-size: 0.85rem;
-    color: var(--text-muted);
-}
 .gamification-stepper-group {
     display: inline-flex;
     align-items: stretch;
@@ -178,7 +142,7 @@
     text-align: center;
     color: var(--text-normal);
 }
-/* Фиксированная ширина под самый длинный месяц (сентябрь — 9 букв), чтобы не прыгал layout */
+/* Фиксированная ширина под самый длинный месяц (сентябрь - 9 букв), чтобы не прыгал layout */
 .gamification-stepper-month {
     min-width: 11ch;
     width: 11ch;
@@ -197,15 +161,6 @@
 .gamification-stepper-current-btn:hover {
     background: var(--background-modifier-hover);
     color: var(--text-normal);
-}
-.gamification-completed-task-left {
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-    flex: 1;
-    min-width: 0;
-    overflow-wrap: break-word;
-    word-break: break-word;
 }
 .gamification-completed-back-in-work {
     font-size: 0.75rem;
@@ -319,7 +274,7 @@
     padding-top: 0.75rem;
     border-top: 1px solid var(--background-modifier-border);
 }
-/* Заголовок магазина — как подсекция «СЕГОДНЯ» у напоминаний, не как «Прогресс» */
+/* Заголовок магазина - как подсекция «СЕГОДНЯ» у напоминаний, не как «Прогресс» */
 .gamification-shop .opa-section-header {
     margin-bottom: 8px;
     cursor: pointer;
@@ -346,9 +301,6 @@
     font-weight: 600;
     color: var(--text-normal);
     text-transform: uppercase;
-}
-.gamification-shop-manage-btn {
-    flex-shrink: 0;
 }
 .gamification-shop-table {
     margin-top: 0.5rem;
@@ -395,11 +347,6 @@
 }
 .gamification-shop-btn {
     flex-shrink: 0;
-}
-.view-modal.gamification-shop-modal {
-    min-width: 320px;
-    width: min(680px, 95vw);
-    max-width: 95vw;
 }
 .gamification-shop-modal .gamification-shop-modal-list {
     display: flex;
@@ -514,13 +461,6 @@
 .gamification-purchased-del:hover {
     color: var(--text-normal);
     background: var(--interactive-hover);
-}
-.gamification-levelup-modal .view-modal-content {
-    text-align: center;
-    padding: 0.5rem 0;
-}
-.gamification-levelup-modal h3 {
-    color: var(--interactive-accent);
 }
 
 .gamification-shop-tabs {
